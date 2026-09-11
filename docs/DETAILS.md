@@ -76,7 +76,7 @@ When `subagents:` is declared, you get two layers:
 
 Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter `name:`, or a built-in); `verify` and `status` check this. Omit `subagents:` for flat coverage: spawns are then audited, not gated, and the subagent runs under the full session warrant.
 
-Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied. Remove `Workflow` from the `allow:` list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.2.3 and authorizer `0.2.3` (pinned in `cli.py`).
+Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied. Remove `Workflow` from the `allow:` list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.3.0 and authorizer `0.3.0` (pinned in `cli.py`).
 
 ## Dry-run mode (`mode: dry-run`)
 

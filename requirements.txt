@@ -6,14 +6,14 @@
 # src/tenuo_claude_code/cli.py.
 # These are only what the CLI / hooks / MCP proxy import.
 #
-# `tenuo` allows 0.2.x patch releases (0.2.3+) but rejects breaking changes in 0.3+
-# The authorizer image tag should match the tenuo version (e.g., tenuo/authorizer:0.2.4).
+# `tenuo` allows 0.3.x patch releases but rejects breaking changes in 0.4+
+# The authorizer image tag is pinned to the minimum supported tenuo version.
 #
 #   uv sync                    # preferred — see pyproject.toml
 #   python3 -m pip install -r requirements.txt
 #
 # Requires Python >= 3.10 (uses `X | None` annotations and the walrus operator).
 
-tenuo>=0.2.3,<0.3
+tenuo>=0.3.0,<0.4
 mcp>=1.0
 PyYAML>=6.0
