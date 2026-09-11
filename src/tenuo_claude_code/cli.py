@@ -354,7 +354,7 @@ POP_HEADER = "X-Tenuo-PoP"
 # The authorizer ships as a published container image (Docker Hub), pinned in
 # lockstep with the `tenuo` PyPI package. Override with TENUO_AUTHORIZER_IMAGE or
 # an `authorizer.image` key in tenuo.yaml.
-DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.2.3"
+DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.3.0"
 
 # Claude tool -> (capability, primary arg, Claude input field for that arg)
 #
@@ -1271,7 +1271,7 @@ def _parse_connect_token(raw: str) -> dict:
     except ImportError as e:
         raise SystemExit(
             "TENUO_CONNECT_TOKEN requires the tenuo_core extension "
-            "(bundled with tenuo>=0.2.3)."
+            "(bundled with tenuo>=0.3.0)."
         ) from e
     except Exception as e:
         raise SystemExit(f"Invalid TENUO_CONNECT_TOKEN: {e}") from e
