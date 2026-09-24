@@ -1,0 +1,68 @@
+#!/bin/sh
+# Entry point for the Tenuo plugin hooks (see hooks/hooks.json).
+#
+# Runs the stdlib-only launcher (tenuo_plugin.py) with python3. If no usable
+# python3 exists, fall back to a minimal shell check so that an opted-in
+# project still fails closed while every other project stays untouched.
+# Usage: tenuo-hook pre|post|session-start
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+mode=${1:-}
+
+# TENUO_PLUGIN_PYTHON pins the interpreter (no fallback to others).
+if [ -n "${TENUO_PLUGIN_PYTHON:-}" ]; then
+  interpreters=$TENUO_PLUGIN_PYTHON
+else
+  interpreters="python3 /usr/bin/python3 python"
+fi
+for py in $interpreters; do
+  if command -v "$py" >/dev/null 2>&1; then
+    "$py" "$here/tenuo_plugin.py" "$@"
+    rc=$?
+    # The launcher only ever exits 0 or 2. Any other code means this
+    # interpreter could not run it (missing, too old, macOS stub), so try the
+    # next one and finally the shell fallback below.
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
+      exit "$rc"
+    fi
+  fi
+done
+
+[ "$mode" = "pre" ] || exit 0
+
+# No python3: opted in means tenuo.yaml + .state/ and no disable marker.
+find_root() {
+  d=$1
+  while [ -n "$d" ]; do
+    if [ -f "$d/tenuo.yaml" ]; then
+      printf '%s' "$d"
+      return 0
+    fi
+    [ "$d" = "/" ] && return 1
+    d=$(dirname -- "$d")
+  done
+  return 1
+}
+root=""
+if [ -n "${TENUO_PROJECT_DIR:-}" ]; then
+  root=$TENUO_PROJECT_DIR
+else
+  for start in "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
+    [ -n "$start" ] || continue
+    root=$(find_root "$start") && break
+    root=""
+  done
+fi
+[ -n "$root" ] || exit 0
+[ -d "$root/.state" ] || exit 0
+[ -e "$root/.state/disabled" ] && exit 0
+# Hooks wired by tenuo-claude init/bootstrap already enforce; stand down.
+for f in "${CLAUDE_PROJECT_DIR:-$root}/.claude/settings.json" \
+         "${CLAUDE_PROJECT_DIR:-$root}/.claude/settings.local.json"; do
+  if [ -f "$f" ] && grep -q 'tenuo' "$f" && grep -Eq '[ "'"'"']_(managed-)?hook' "$f"; then
+    exit 0
+  fi
+done
+reason="Tenuo governs $root but python3 was not found, so the Tenuo hook cannot run (fail-closed). Install python3 and tenuo-claude-code, or run tenuo-claude disable."
+printf '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "%s"}}\n' "$reason"
+printf '%s\n' "$reason" >&2
+exit 2
