@@ -5,53 +5,42 @@
 [![CI](https://github.com/tenuo-ai/tenuo-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/tenuo-claude-code/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Task-scoped authorization for Claude Code.**
+**Claude Code's permissions decide which tools Claude can call. Tenuo decides what it can call them with.**
 
-Give Claude Code access to your codebase and tools without giving it access to everything. Tenuo constrains what Claude can read, execute, fetch, and invoke before each action runs. You get signed evidence of what was allowed or denied—a tamper-proof audit trail.
+Tenuo checks the arguments of every tool call against your policy before the call runs: which repo, which directory, which commands, which domains. That includes MCP tools, with no change to the MCP server. Each decision is written as a signed receipt.
 
-Tenuo works alongside Claude Code permissions. It adds a signed, expiring authority token that stays enforced even when permission prompts are bypassed, across MCP calls and subagents.
+Here Claude Code's own permissions allowed the GitHub MCP server's `get_file_contents`. The Tenuo policy allows one repository:
+
+```yaml
+mcp:
+  enforce:
+    get_file_contents:
+      args:
+        owner: "exact:tenuo-ai"
+        repo: "pattern:tenuo"
+default: deny
+```
+
+```
+$ tenuo-claude audit
+  ALLOW      [gov] mcp__github__get_file_contents -> get_file_contents  authorized  owner=tenuo-ai path=README.md repo=tenuo
+  DENY       [gov] mcp__github__get_file_contents -> get_file_contents  Constraint not satisfied  owner=tenuo-ai path=README.md repo=tenuo-cloud
+  DENY       [gov] mcp__github__get_file_contents -> get_file_contents  Constraint not satisfied  owner=torvalds path=README repo=linux
+```
+
+The same check covers Claude's own tools: reads and edits stay inside the project, the shell runs only the commands you list, and WebFetch reaches only the domains you name.
 
 ## Why Tenuo?
 
-Claude Code permissions prompt the user; Tenuo checks the **model's action** at the authorizer boundary. The difference matters:
-
-| | Claude Code permissions | Tenuo warrant |
+| | Claude Code permissions | Tenuo |
 |---|---|---|
-| **Trigger** | User prompt when Claude asks for access | Automatic check before every tool call |
-| **Scope** | Tool name only | Tool name + argument values |
-| **Bypass** | Prompt can be skipped | Cannot be disabled by the user |
-| **Evidence** | Optional hook logs | Signed, tamper-proof receipts |
-| **Revocation** | Edit rules (active sessions may keep access) | Instant fleet-wide revocation (Cloud) |
-| **Enforcement** | Claude Code settings UI | PreToolUse hook + MCP proxy + authorizer |
-| **Span** | Single session | Persists across MCP calls and subagents |
+| **Matches** | Tool name; command and path patterns for built-in tools | Any argument of any tool, including MCP tools |
+| **Decides** | Allow, deny or ask the user | Allow or deny before the call, against a signed, expiring warrant |
+| **Evidence** | Optional hook logs | Signed, hash-chained receipts (`tenuo-claude audit --verify`) |
+| **Subagents** | Same rules as the session | Each declared subagent gets a narrower warrant |
+| **Teams** | Managed settings | Managed settings plus an org-signed root, revocation and approvals (Cloud) |
 
-Tenuo doesn't replace Claude Code permissions—it adds a cryptographic gate that works regardless of why the model tried the call: prompt injection, hallucination, poisoned tool output, or direct user request.
-
-## What It Looks Like
-
-After setup, this is what you see:
-
-```
-tenuo-claude audit --verify
-
-DENY   Read /etc/passwd                constraint not satisfied
-       path outside workspace (subpath:/home/user/project)
-
-ALLOW  Read /home/user/project/main.py  constraint satisfied
-DENY   Bash rm -rf /                    command not permitted
-       'rm' not in allowlist [ls,pwd,cat,grep]
-
-3 signed receipts verified:
-  Ed25519 signatures valid
-  Hash chain unbroken
-  Constraints replayed and satisfied
-```
-
-Each decision is:
-- **Signed** with Ed25519 (cryptographic proof)
-- **Hash-chained** (tampering is detected)
-- **Constraint-replayed** (warrant terms verified at audit time)
-- **Cloud-synced** (if configured, sent to tenant for fleet audit)
+Tenuo runs alongside Claude Code permissions. It checks the call whatever led the model to make it: prompt injection, a poisoned tool result, or a plain mistake.
 
 ## Quickstart
 
@@ -97,6 +86,17 @@ tenuo-claude refresh
 - `http-api-safe` — WebFetch with SSRF protection and domain allowlists
 
 Browse more: [examples/policies/](examples/policies/).
+
+### Limit an MCP server
+
+Add the server to Claude Code as usual, then scope it. For the GitHub MCP server:
+
+```bash
+tenuo-claude init --pack github-mcp --param owner=myorg --param repos='service-*' --param approver=any-human
+tenuo-claude up
+```
+
+Reads and ordinary writes are limited to `myorg/service-*`; merges, pushes and file writes need a human approval (Tenuo Cloud; locally they are denied); everything else is denied. For another server, list its tools under `mcp.enforce` with a constraint per argument; see [Policy](#policy).
 
 **For Cloud mode** (org root, revocation, human approval):
 
