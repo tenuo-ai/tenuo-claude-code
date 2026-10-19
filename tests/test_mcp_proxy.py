@@ -9,6 +9,7 @@ writing/hitl-mcp-gateway-plan.md.
 from __future__ import annotations
 
 from tenuo_claude_code import cli
+import pytest
 
 
 def test_allow_forwards(cli_mod):
@@ -51,3 +52,31 @@ def test_audit_mode_forwards_even_on_approval_pending(cli_mod):
         False, f"{cli_mod.APPROVAL_PENDING_REASON}: 1 approval(s) required", True, "delete_deployment")
     assert forward is True
     assert message is None
+
+
+def test_downstream_script_path_runs_with_this_python(cli_mod, bound):
+    import sys
+
+    command, args, env, label = cli_mod.downstream_server({"downstream": "server.py"})
+    assert command == sys.executable
+    assert args == [str((bound / "server.py").resolve())] and env is None and label == args[0]
+
+
+def test_downstream_command_with_env_from_proxy_environment(cli_mod, bound, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
+    command, args, env, label = cli_mod.downstream_server({"downstream": {
+        "command": "docker",
+        "args": ["run", "-i", "--rm", "ghcr.io/github/github-mcp-server"],
+        "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}", "UNSET": "${NOT_SET_ANYWHERE}"},
+    }})
+    assert (command, args[-1]) == ("docker", "ghcr.io/github/github-mcp-server")
+    assert env == {"GITHUB_PERSONAL_ACCESS_TOKEN": "t0ken", "UNSET": "${NOT_SET_ANYWHERE}"}
+    assert label == "docker run -i --rm ghcr.io/github/github-mcp-server"
+
+
+@pytest.mark.parametrize("spec", [
+    None, "", {"args": ["x"]}, {"command": "npx", "args": "x"}, {"command": "npx", "env": {"A": 1}},
+])
+def test_downstream_rejects_bad_shapes(cli_mod, bound, spec):
+    with pytest.raises(SystemExit):
+        cli_mod.downstream_server({"downstream": spec})

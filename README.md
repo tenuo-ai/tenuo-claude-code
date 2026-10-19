@@ -220,13 +220,46 @@ subagents:                  # optional: each role runs under a narrower warrant
     tools: [Read, Grep, Glob]
 
 mcp:                        # optional: govern a downstream MCP server's tools
-  downstream: ./your_mcp_server.py
+  downstream: ./your_mcp_server.py   # or {command: npx, args: [...], env: {...}}
   enforce:
     read_file: "subpath:{sandbox}"
     run_query:
-      arg: sql
-      constraint: "regex:^SELECT "
+      arg: database
+      constraint: "oneof:analytics,staging"
 ```
+
+### Any MCP client
+
+`tenuo-claude mcp-proxy` serves `mcp.downstream` over stdio and checks each call against the policy before forwarding it, so the same rules apply in Cursor, Claude Desktop or any other MCP client. The downstream can be any stdio server. Env values can reference the proxy's environment, which keeps tokens out of `tenuo.yaml`:
+
+```yaml
+mcp:
+  downstream:
+    command: docker
+    args: [run, -i, --rm, -e, GITHUB_PERSONAL_ACCESS_TOKEN, ghcr.io/github/github-mcp-server]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+  enforce:
+    get_file_contents:
+      args: {owner: "exact:myorg", repo: "pattern:service-*"}
+default: deny
+```
+
+Then point the client at the proxy instead of the server, with `tenuo-claude up` running in the project:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "tenuo-claude",
+      "args": ["mcp-proxy"],
+      "env": {"TENUO_PROJECT_DIR": "/path/to/project", "GITHUB_TOKEN": "..."}
+    }
+  }
+}
+```
+
+A denied call returns an MCP error result (`isError: true`) naming the refused constraint, and is recorded in `tenuo-claude audit`.
 
 ### Constraints
 
