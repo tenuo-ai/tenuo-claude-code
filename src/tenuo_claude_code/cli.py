@@ -475,6 +475,33 @@ def hook_wiring_command_string(subcommand: str) -> str:
     return shlex.join(["/bin/sh", "-c", guard])
 
 
+def downstream_server(mcp_cfg: dict) -> tuple[str, list[str], dict | None, str]:
+    """(command, args, env, label) for `mcp.downstream`.
+
+    A string is a local Python MCP server script, run with this interpreter. A
+    mapping runs any stdio server: `{command: npx, args: [...], env: {...}}`.
+    Env values may reference the proxy's environment as ${VAR}, so tokens stay
+    out of tenuo.yaml.
+    """
+    spec = mcp_cfg.get("downstream")
+    if isinstance(spec, str) and spec:
+        path = str((DEMO_DIR / spec).resolve())
+        return sys.executable, [path], None, path
+    if not isinstance(spec, dict) or not isinstance(spec.get("command"), str) or not spec["command"]:
+        raise SystemExit("mcp.downstream must be a script path or {command: ..., args: [...], env: {...}}")
+    args = spec.get("args") or []
+    env = spec.get("env")
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise SystemExit("mcp.downstream.args must be a list of strings")
+    if env is not None and (not isinstance(env, dict)
+                            or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())):
+        raise SystemExit("mcp.downstream.env must map names to strings")
+    if env is not None:
+        from string import Template
+        env = {k: Template(v).safe_substitute(os.environ) for k, v in env.items()}
+    return spec["command"], list(args), env, shlex.join([spec["command"], *args])
+
+
 def mcp_wiring(cfg: dict) -> dict | None:
     """Expected ``.mcp.json`` content when ``mcp.downstream`` is configured."""
     if not cfg.get("mcp", {}).get("downstream"):
@@ -2291,12 +2318,12 @@ def cmd_mcp_proxy(_args) -> None:
     from mcp.client.stdio import StdioServerParameters, stdio_client
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
-    from mcp.types import TextContent
+    from mcp.types import CallToolResult, TextContent
 
     cfg = load_config()
     apply_transport_env(cfg)
     mcp_cfg = cfg.get("mcp", {})
-    downstream = str((DEMO_DIR / mcp_cfg.get("downstream", "")).resolve())
+    command, command_args, env, downstream = downstream_server(mcp_cfg)
     enforced = mcp_enforce_entries(cfg)
     catchall = catchall_cap(cfg)
     audit_only = is_dry_run_mode(cfg)
@@ -2306,7 +2333,7 @@ def cmd_mcp_proxy(_args) -> None:
         print(f"[tenuo-mcp-proxy] {m}", file=sys.stderr, flush=True)
 
     async def run():
-        params = StdioServerParameters(command=sys.executable, args=[downstream])
+        params = StdioServerParameters(command=command, args=command_args, env=env)
         async with stdio_client(params) as (dr, dw):
             async with ClientSession(dr, dw) as down:
                 await down.initialize()
@@ -2347,10 +2374,12 @@ def cmd_mcp_proxy(_args) -> None:
                     forward, message = mcp_proxy_decision(allowed, reason, audit_only, name)
                     if not forward:
                         log(f"DENY {name}: {reason}")
-                        return [TextContent(type="text", text=message)]
+                        return CallToolResult(content=[TextContent(type="text", text=message)], isError=True)
                     if not allowed:
                         log(f"WOULD-DENY {name} (observe-only, forwarding): {reason}")
-                    return (await down.call_tool(name, tin)).content
+                    # Pass the server's result through whole, so its own isError
+                    # and structured content reach the client.
+                    return await down.call_tool(name, tin)
 
                 async with stdio_server() as (r, w):
                     await proxy.run(r, w, proxy.create_initialization_options())
@@ -5322,7 +5351,7 @@ COMMANDS = {
     "audit": cmd_audit, "revoke": cmd_revoke,
     "verify": cmd_verify, "doctor": cmd_doctor, "demo": cmd_demo, "bench": cmd_bench,
     "_hook": cmd_hook, "_managed-hook": cmd_managed_hook,
-    "_post": cmd_post, "_mcp-proxy": cmd_mcp_proxy,
+    "_post": cmd_post, "_mcp-proxy": cmd_mcp_proxy, "mcp-proxy": cmd_mcp_proxy,
     "_managed-mcp-proxy": cmd_managed_mcp_proxy,
 }
 
@@ -5336,6 +5365,8 @@ def main() -> None:
     for name in ["down", "status", "check", "revoke",
                  "_hook", "_managed-hook", "_post", "_mcp-proxy", "_managed-mcp-proxy"]:
         sub.add_parser(name)
+    sub.add_parser("mcp-proxy",
+                   help="serve mcp.downstream over stdio, checking each call (for any MCP client)")
     sub.add_parser("disable",
                    help="turn governance off (unwire hooks + stop authorizer; keeps policy/state)")
     pun = sub.add_parser("uninstall",
