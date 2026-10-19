@@ -10,7 +10,8 @@ from tenuo_claude_code import admin, packs
 
 SAMPLE_PARAMS = {
     "filesystem-dev": {
-        "sandbox": "./workspace",
+        "sandbox": ".",
+        "commands": "ls,pwd",
         "web_domain": "api.github.com",
     },
     "github-mcp": {
