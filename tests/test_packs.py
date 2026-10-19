@@ -158,3 +158,18 @@ def test_cloud_warrant_config_keeps_constraints_and_approval_gate(make_cfg):
     }
     assert wc["approval_gates"]["merge_pull_request"] == {"args": None}
     assert wc["approval_gates"]["_policy_id"] == "appr_123"
+
+
+def test_bootstrap_pack_renders_policy_without_prompting(monkeypatch, tmp_path, cli_mod, bound):
+    """`bootstrap --pack` (the README quickstart) renders the pack with defaults."""
+    _bind_load_config_paths(monkeypatch, cli_mod, tmp_path)
+    steps = []
+    monkeypatch.setattr(cli_mod, "cmd_init", lambda args: steps.append("init"))
+    monkeypatch.setattr(cli_mod, "cmd_up", lambda args: steps.append("up"))
+    monkeypatch.setattr(cli_mod, "cmd_verify", lambda args: steps.append("verify"))
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("bootstrap must not prompt"))
+
+    cli_mod.cmd_bootstrap(argparse.Namespace(pack="filesystem-dev", native=False, install=False))
+
+    assert "# pack: filesystem-dev" in (tmp_path / "tenuo.yaml").read_text()
+    assert steps == ["init", "up", "verify"]
