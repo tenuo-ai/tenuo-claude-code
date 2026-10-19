@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/tenuo-claude-code)](https://pypi.org/project/tenuo-claude-code/)
 [![Python](https://img.shields.io/pypi/pyversions/tenuo-claude-code)](https://pypi.org/project/tenuo-claude-code/)
-[![CI](https://github.com/tenuo-ai/tenuo-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/tenuo-claude-code/actions/workflows/ci.yml)
+[![CI](https://github.com/tenuo-ai/tenuo-claude-code/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tenuo-ai/tenuo-claude-code/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 **Task-scoped authorization for Claude Code.**
@@ -105,6 +105,37 @@ tenuo-claude bootstrap --native --pack filesystem-dev --cloud
 ```
 
 Then follow the Cloud setup prompts. [Details: Cloud mode](#cloud-mode).
+
+## Install as a Claude Code plugin
+
+The repo is also a Claude Code plugin marketplace. Inside Claude Code:
+
+```text
+/plugin marketplace add tenuo-ai/tenuo-claude-code
+/plugin install tenuo@tenuo
+```
+
+The plugin still needs the CLI (`uv tool install tenuo-claude-code`) and a policy (`tenuo-claude bootstrap --native --pack filesystem-dev`). What it adds:
+
+- **Hooks that stay out of the way.** PreToolUse, PostToolUse, and SessionStart hooks run in every project, but they do nothing unless the project has opted in. Repos without Tenuo keep Claude Code's normal permissions.
+- **A fail-closed safety net.** If a project is governed but its `.claude/settings.json` wiring is missing (a fresh clone, a regenerated settings file), the plugin routes each call to `tenuo-claude _hook` itself. If the CLI can't be found or crashes, the call is denied with a message saying how to fix it.
+- **A one-line status at session start**, plus `/tenuo:status` (`tenuo-claude check`) and `/tenuo:audit` (`tenuo-claude audit --verify`).
+
+How the plugin decides, per tool call:
+
+| Project state | PreToolUse result |
+|---|---|
+| No `tenuo.yaml` in the session directory or any parent | Nothing (Claude Code permissions apply) |
+| `tenuo.yaml` but no `.state/` (never initialized) | Nothing; session start says to run `bootstrap` |
+| `.state/disabled` present (`tenuo-claude disable`) | Nothing; `tenuo-claude up` or `init` re-arms it |
+| Tenuo hooks already wired by `init`/`bootstrap` (project, user, or managed settings) | Nothing; the wired hook enforces, so no double receipts |
+| Initialized, not wired, `tenuo-claude` found | Delegates to `tenuo-claude _hook` |
+| Initialized, not wired, `tenuo-claude` missing, crashing, or timing out | Deny (fail-closed) |
+| `TENUO_PROJECT_DIR` set to a directory without `tenuo.yaml` | Deny (fail-closed) |
+
+The CLI is found via `TENUO_CLAUDE_BIN`, the project `.venv`, `PATH`, then the uv tool and pipx install locations. The launcher is stdlib Python ([`plugins/tenuo/scripts/tenuo_plugin.py`](plugins/tenuo/scripts/tenuo_plugin.py)); it makes no network calls itself. macOS and Linux only, like the CLI.
+
+To try a local checkout: `claude --plugin-dir ./plugins/tenuo`.
 
 ## How It Works
 

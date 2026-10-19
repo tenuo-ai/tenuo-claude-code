@@ -1,0 +1,15 @@
+{
+  "name": "tenuo",
+  "displayName": "Tenuo",
+  "version": "0.1.0",
+  "description": "Task-scoped authorization for Claude Code: signed, expiring warrants constrain which tools Claude may call and with which arguments, checked before each call, with signed allow/deny receipts. Inactive until a project opts in with tenuo.yaml.",
+  "author": {
+    "name": "Tenuo",
+    "email": "daniel@tenuo.ai",
+    "url": "https://tenuo.ai"
+  },
+  "homepage": "https://tenuo.ai",
+  "repository": "https://github.com/tenuo-ai/tenuo-claude-code",
+  "license": "Apache-2.0",
+  "keywords": ["security", "authorization", "governance", "warrants", "audit", "hooks", "mcp", "agents"]
+}
