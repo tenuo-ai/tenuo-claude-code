@@ -342,7 +342,12 @@ def docker_ok() -> tuple[bool, str]:
     return True, "Docker daemon running"
 
 
-def choose_backend(args, *, force_native: bool = False) -> str:
+def choose_backend(args, *, force_native: bool = False, saved: str | None = None) -> str:
+    """Flags, then env, then the backend this project last started with, then auto-detect.
+
+    ``saved`` keeps `refresh` and a later bare `up` on the backend the user chose
+    with `bootstrap --native`, instead of switching to Docker because a daemon is up.
+    """
     if getattr(args, "native", False) and getattr(args, "docker", False):
         raise SystemExit("Use only one of --native or --docker")
     if getattr(args, "docker", False):
@@ -354,6 +359,8 @@ def choose_backend(args, *, force_native: bool = False) -> str:
         return "native"
     if os.environ.get("TENUO_AUTHORIZER_NATIVE", "").strip().lower() in ("1", "true", "yes"):
         return "native"
+    if saved in ("native", "docker"):
+        return saved
     ok, _ = docker_ok()
     return "native" if not ok else "docker"
 

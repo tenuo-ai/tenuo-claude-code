@@ -79,6 +79,17 @@ def test_choose_backend_auto_fallback(monkeypatch):
         assert art.choose_backend(args) == "docker"
 
 
+def test_choose_backend_keeps_saved_choice(monkeypatch):
+    monkeypatch.delenv("TENUO_AUTHORIZER_NATIVE", raising=False)
+    monkeypatch.delenv("TENUO_AUTHORIZER_BACKEND", raising=False)
+    args = argparse.Namespace(native=False, docker=False)
+    with mock.patch.object(art, "docker_ok", return_value=(True, "ok")):
+        assert art.choose_backend(args, saved="native") == "native"
+        assert art.choose_backend(argparse.Namespace(native=False, docker=True), saved="native") == "docker"
+    with mock.patch.object(art, "docker_ok", return_value=(False, "not installed")):
+        assert art.choose_backend(args, saved="docker") == "docker"
+
+
 def test_resolve_binary_env_override(tmp_path, monkeypatch):
     binary = tmp_path / "tenuo-authorizer"
     binary.write_bytes(b"fake")

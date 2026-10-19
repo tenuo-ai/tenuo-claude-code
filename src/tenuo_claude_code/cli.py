@@ -3700,8 +3700,7 @@ def cmd_onboard(args) -> None:
     if pack_name:
         # Render policy pack instead of scaffold example
         try:
-            from tenuo_claude_code.packs import render_policy_pack
-            render_policy_pack(argparse.Namespace(pack=pack_name))
+            render_policy_pack(argparse.Namespace(pack=pack_name, yes=getattr(args, "yes", False)))
             created = True
         except Exception as e:
             raise SystemExit(f"Policy pack '{pack_name}' failed: {e}")
@@ -4079,11 +4078,14 @@ def cmd_up(_args) -> None:
 
     # Launch the authorizer (Docker container or native binary).
     image = authorizer_image(cfg)
-    backend = art.choose_backend(_args)
+    saved_path = STATE / "authorizer-backend"
+    saved = saved_path.read_text().strip() if saved_path.is_file() else None
+    backend = art.choose_backend(_args, saved=saved)
     if backend == "native":
         _start_authorizer_native(cfg, denv, image=image, install=getattr(_args, "install", False))
     else:
         _start_authorizer_docker(cfg, denv, cloud=cloud)
+    saved_path.write_text(backend + "\n")
     cmd_status(_args)
 
 
