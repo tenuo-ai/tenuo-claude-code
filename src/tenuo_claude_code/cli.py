@@ -4322,6 +4322,12 @@ def cmd_audit(args) -> None:
         vals = row.get("args") or {}
         if not isinstance(vals, dict):
             return ""
+        if str(row.get("claude_tool", "")).startswith("mcp__"):
+            # MCP policies constrain arbitrary argument names (owner, repo, ...);
+            # show every short scalar so a denial says which value was refused.
+            shown = [f"{k}={v}" for k, v in sorted(vals.items())
+                     if isinstance(v, (str, int, float, bool)) and len(str(v)) <= 80]
+            return "  " + " ".join(shown) if shown else ""
         parts = []
         for key in ("file_path", "path", "url", "command", "target", "subagent_type"):
             val = vals.get(key)
