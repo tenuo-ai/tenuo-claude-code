@@ -1,7 +1,7 @@
 # pack: ${pack_name} ${pack_version}
 # pinned: ${pinned_name} ${pinned_version} (tool-list ${tool_list_hash})
 # reviewed: ${reviewed} by ${reviewed_by}
-# params: sandbox=${sandbox}, web_domain=${web_domain}
+# params: sandbox=${sandbox}, commands=${commands}, web_domain=${web_domain}
 name: filesystem-dev-agent
 sandbox: ${sandbox}
 mode: dry-run          # flip to enforce when the WOULD-DENY log looks right
@@ -14,7 +14,11 @@ enforce:
   Grep: "subpath:{sandbox}"
   Glob: "subpath:{sandbox}"
   NotebookEdit: "subpath:{sandbox}"
-  Bash: "shlex:git,ls,pwd,cat,grep,rg,sed,head,tail,find"
+  # Claude reads and searches files with Read/Grep/Glob, which are path-checked.
+  # shlex checks the command name, not its paths: `cat ~/.aws/credentials`,
+  # `sed -i` and `git -c ...` pass if cat/sed/git are listed. Add only commands
+  # you'd let the agent run on any path (test runners, linters).
+  Bash: "shlex:${commands}"
   WebFetch:
     domains: ["${web_domain}"]
 

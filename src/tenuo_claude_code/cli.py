@@ -1702,6 +1702,35 @@ def resolve_subagent_role(role: str, defs: dict[str, Path] | None = None) -> tup
     return False, "no agent definition"
 
 
+PATH_TOOLS = frozenset({"Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"})
+
+
+def tenuo_file_target(tool: str, tin: dict) -> str | None:
+    """The Tenuo-owned project file a path tool would touch, else None.
+
+    `.state` holds the issuer and holder keys, and the policy and Claude hook
+    wiring decide what is enforced. If the agent could read or rewrite them it
+    could mint itself authority or unwire the hook, so path tools never reach
+    them, whatever the sandbox is.
+    """
+    if tool not in PATH_TOOLS:
+        return None
+    value = (tin or {}).get(TOOL_DEFAULTS[tool][2])
+    if not isinstance(value, str) or not value:
+        return None
+    target = os.path.realpath(os.path.abspath(value))
+    project = os.path.realpath(DEMO_DIR)
+    state = os.path.realpath(STATE)
+    if target == state or target.startswith(state + os.sep):
+        return ".state"
+    owned = ("tenuo.yaml", "tenuo.cloud.yaml", "tenuo.advanced.yaml", ".mcp.json",
+             os.path.join(".claude", "settings.json"), os.path.join(".claude", "settings.local.json"))
+    for rel in owned:
+        if target == os.path.realpath(os.path.join(project, rel)):
+            return rel
+    return None
+
+
 def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
                    live: bool = False, skip_approval_gate: bool = False,
                    return_context: bool = False):
@@ -1728,6 +1757,10 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
     def done(allowed, reason, governed, tenuo_tool, evidence=None):
         out = (allowed, reason, governed, tenuo_tool)
         return (*out, evidence or {}) if return_context else out
+
+    own = tenuo_file_target(tool, tin)
+    if own:
+        return done(False, f"{own} is Tenuo's own file; the agent can't read or change it", True, tool)
 
     if tool in SPAWN_TOOLS and not agent_type:
         if not roles:
