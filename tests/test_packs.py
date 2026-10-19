@@ -14,7 +14,8 @@ SAMPLE_PARAMS = {
         "web_domain": "api.github.com",
     },
     "github-mcp": {
-        "repos": "myorg/payments-api",
+        "owner": "myorg",
+        "repos": "payments-api",
         "approver": "niki@tenuo.ai",
     },
     "http-api-safe": {
@@ -98,18 +99,20 @@ def test_github_mcp_pack_renders_policy():
 
     text = packs.render_pack(
         pack,
-        {"repos": "myorg/payments-api", "approver": "niki@tenuo.ai"},
+        {"owner": "myorg", "repos": "payments-*", "approver": "niki@tenuo.ai"},
     )
     data = yaml.safe_load(text)
 
     assert data["name"] == "github-agent"
     assert data["mode"] == "dry-run"
     assert data["default"] == "deny"
-    assert data["mcp"]["enforce"]["get_file_contents"]["constraint"] == "pattern:myorg/payments-api"
+    assert data["mcp"]["enforce"]["get_file_contents"]["args"] == {
+        "owner": "exact:myorg", "repo": "pattern:payments-*"}
     merge = data["mcp"]["enforce"]["merge_pull_request"]
-    assert merge["args"]["repo"] == "pattern:myorg/payments-api"
+    assert merge["args"] == {"owner": "exact:myorg", "repo": "pattern:payments-*"}
     assert merge["approval"] == {"threshold": 1, "approver": "niki@tenuo.ai"}
-    assert data["deny"] == ["delete_repository", "delete_branch", "fork_repository"]
+    assert data["deny"] == ["fork_repository", "create_repository"]
+    assert "issue_read" in data["mcp"]["enforce"] and "get_issue" not in data["mcp"]["enforce"]
 
 
 def test_init_pack_writes_policy_and_compiles(monkeypatch, tmp_path, cli_mod, bound):
@@ -124,7 +127,7 @@ def test_init_pack_writes_policy_and_compiles(monkeypatch, tmp_path, cli_mod, bo
 
     cli_mod.cmd_init(argparse.Namespace(
         pack="github-mcp",
-        param=["repos=myorg/payments-api", "approver=niki@tenuo.ai"],
+        param=["owner=myorg", "repos=payments-api", "approver=niki@tenuo.ai"],
         force=False,
         scaffold=False,
         local=False,
@@ -134,8 +137,8 @@ def test_init_pack_writes_policy_and_compiles(monkeypatch, tmp_path, cli_mod, bo
     ))
 
     text = (tmp_path / "tenuo.yaml").read_text()
-    assert "# pack: github-mcp v3" in text
-    assert "pattern:myorg/payments-api" in text
+    assert "# pack: github-mcp v4" in text
+    assert "exact:myorg" in text and "pattern:payments-api" in text
     assert called["cfg"]["mcp"]["enforce"]["merge_pull_request"]["approval"]["approver"] == "niki@tenuo.ai"
 
 
