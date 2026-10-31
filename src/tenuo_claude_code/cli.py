@@ -95,6 +95,8 @@ _receipt_write_warned = False  # one-time stderr if .state/receipts.jsonl can't 
 
 PORT = art.resolve_authorizer_port()
 AUTHZ_URL = f"http://127.0.0.1:{PORT}"
+HEALTH_PORT = art.resolve_authorizer_health_port(PORT)
+HEALTH_URL = f"http://127.0.0.1:{HEALTH_PORT}"
 
 # Default path for the Unix-socket transport (see `authz_endpoint`). A root-owned
 # socket under a root-owned, non-world-writable runtime dir is what lets the hook
@@ -354,7 +356,7 @@ POP_HEADER = "X-Tenuo-PoP"
 # The authorizer ships as a published container image (Docker Hub), pinned in
 # lockstep with the `tenuo` PyPI package. Override with TENUO_AUTHORIZER_IMAGE or
 # an `authorizer.image` key in tenuo.yaml.
-DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.3.0"
+DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.3.5"
 
 # Claude tool -> (capability, primary arg, Claude input field for that arg)
 #
@@ -1271,7 +1273,7 @@ def _parse_connect_token(raw: str) -> dict:
     except ImportError as e:
         raise SystemExit(
             "TENUO_CONNECT_TOKEN requires the tenuo_core extension "
-            "(bundled with tenuo>=0.3.0)."
+            "(bundled with tenuo>=0.3.5)."
         ) from e
     except Exception as e:
         raise SystemExit(f"Invalid TENUO_CONNECT_TOKEN: {e}") from e
@@ -3244,14 +3246,19 @@ def _start_authorizer_docker(cfg: dict, denv: dict, *, cloud: bool) -> None:
     docker("rm", "-f", name)
     sync_authorizer_mount()
     mount = authorizer_mount_dir()
-    art.assert_port_available(PORT, AUTHZ_URL, mount)
+    art.assert_port_available(PORT, HEALTH_URL, mount)
+    art.assert_port_available(HEALTH_PORT, HEALTH_URL, mount)
     if SRL.exists() and not cloud:
         denv["TENUO_REVOCATION_LIST"] = f"/state/{SRL.name}"
-    run = ["run", "-d", "--name", name, "-p", f"127.0.0.1:{PORT}:9090",
+    run = ["run", "-d", "--name", name,
+           "-p", f"127.0.0.1:{PORT}:9090",
+           "-p", f"127.0.0.1:{HEALTH_PORT}:9091",
            "-v", f"{mount.resolve()}:/state:ro"]
     for k, v in denv.items():
         run += ["-e", f"{k}={v}"]
-    serve = ["serve", "--config", f"/state/{GATEWAY.name}", "--port", "9090", "--bind", "0.0.0.0"]
+    serve = ["serve", "--config", f"/state/{GATEWAY.name}",
+             "--port", "9090", "--bind", "0.0.0.0",
+             "--health-port", "9091", "--health-bind", "0.0.0.0"]
     print(f"Starting authorizer container {name} ({image}; pulling if needed)…")
     started = docker(*run, image, *serve)
     if started.returncode != 0:
@@ -3264,7 +3271,7 @@ def _start_authorizer_docker(cfg: dict, denv: dict, *, cloud: bool) -> None:
                          + (logs.stdout or logs.stderr)[-1500:])
 
     art.wait_healthy(
-        AUTHZ_URL,
+        HEALTH_URL,
         is_running=lambda: authorizer_running(cfg),
         on_exited=_on_exit,
     )
@@ -3281,7 +3288,8 @@ def _start_authorizer_native(cfg: dict, denv: dict, *, image: str, install: bool
         mount=mount,
         gateway_name=GATEWAY.name,
         port=PORT,
-        authz_url=AUTHZ_URL,
+        health_port=HEALTH_PORT,
+        authz_url=HEALTH_URL,
         denv=denv,
         srl_name=SRL.name if SRL.exists() else None,
         state=STATE,
@@ -3293,7 +3301,7 @@ def _start_authorizer_native(cfg: dict, denv: dict, *, image: str, install: bool
         raise SystemExit("Native authorizer exited during startup (see .state/authorizer.log)")
 
     art.wait_healthy(
-        AUTHZ_URL,
+        HEALTH_URL,
         is_running=lambda: art.native_process_alive(mount),
         on_exited=_on_exit,
     )
@@ -3892,7 +3900,8 @@ def authorizer_running(cfg: dict) -> bool:
     mount = authorizer_mount_dir()
     backend = art.read_runtime_backend(mount)
     if backend == "native" or art.native_pid_path(mount).is_file():
-        return art.native_running(mount, resolve_authz_url())
+        health_port = art.resolve_authorizer_health_port(art.resolve_authorizer_port())
+        return art.native_running(mount, f"http://127.0.0.1:{health_port}")
     # No native state recorded, so any authorizer we manage would be the Docker
     # container. On a host without Docker (e.g. macOS/WSL on the native backend)
     # nothing we manage is running — report that instead of hard-failing.
@@ -4203,7 +4212,11 @@ def _status_json():
                 return None
             status, raw = _UDSConnection(loc, timeout=3).request("GET", "/status")
             return json.loads(raw.decode()) if status == 200 else None
-        with urllib.request.urlopen(loc + "/status", timeout=3) as resp:
+        # Since authorizer 0.3.5, unauthenticated health and status endpoints
+        # live on the separate health listener. Keep custom/remote endpoints
+        # unchanged; only the locally managed authorization URL is remapped.
+        status_loc = HEALTH_URL if loc == AUTHZ_URL else loc
+        with urllib.request.urlopen(status_loc + "/status", timeout=3) as resp:
             return json.loads(resp.read().decode())
     except Exception:
         return None

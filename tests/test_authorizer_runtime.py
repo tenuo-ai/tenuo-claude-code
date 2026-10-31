@@ -55,6 +55,16 @@ def test_resolve_authorizer_port_legacy_fallback(monkeypatch):
     assert art.resolve_authorizer_port() == 9092
 
 
+def test_resolve_authorizer_health_port_is_separate(monkeypatch):
+    monkeypatch.delenv(art.AUTHORIZER_HEALTH_PORT_ENV, raising=False)
+    assert art.resolve_authorizer_health_port(9090) == 9091
+
+
+def test_resolve_authorizer_health_port_env(monkeypatch):
+    monkeypatch.setenv(art.AUTHORIZER_HEALTH_PORT_ENV, "9191")
+    assert art.resolve_authorizer_health_port(9090) == 9191
+
+
 def test_choose_backend_flags():
     args = argparse.Namespace(native=True, docker=False)
     assert art.choose_backend(args) == "native"
@@ -119,7 +129,7 @@ def test_install_authorizer_skips_when_current(tmp_path, monkeypatch):
     managed.parent.mkdir()
     managed.write_bytes(b"fake")
     with mock.patch.object(art, "managed_binary_path", return_value=managed):
-        with mock.patch.object(art, "query_binary_version", return_value="0.3.0+authz.3"):
+        with mock.patch.object(art, "query_binary_version", return_value="0.3.5+authz.3"):
             with mock.patch.object(art, "download_release_binary") as dl:
                 result = art.install_authorizer(force=False)
                 assert result == managed
@@ -182,7 +192,7 @@ def test_install_authorizer_cmd_without_project(tmp_path, monkeypatch):
     fake.parent.mkdir()
     fake.write_bytes(b"fake")
     monkeypatch.setattr(art, "install_authorizer", lambda *a, **kw: fake)
-    monkeypatch.setattr(art, "query_binary_version", lambda p: "0.3.0+authz.3")
+    monkeypatch.setattr(art, "query_binary_version", lambda p: "0.3.5+authz.3")
     cli.main()
 
 

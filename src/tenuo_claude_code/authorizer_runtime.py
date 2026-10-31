@@ -23,9 +23,10 @@ from typing import Callable
 
 import certifi
 
-DEFAULT_IMAGE = "tenuo/authorizer:0.3.0"
+DEFAULT_IMAGE = "tenuo/authorizer:0.3.5"
 DEFAULT_AUTHORIZER_PORT = 9090
 AUTHORIZER_PORT_ENV = "TENUO_AUTHORIZER_PORT"
+AUTHORIZER_HEALTH_PORT_ENV = "TENUO_AUTHORIZER_HEALTH_PORT"
 LEGACY_AUTHORIZER_PORT_ENV = "PORT"
 RELEASE_REPO = "tenuo-ai/tenuo"
 _INFO_VERSION_RE = re.compile(r"^Tenuo Authorizer v(\S+)", re.MULTILINE)
@@ -47,6 +48,17 @@ def resolve_authorizer_port() -> int:
         if raw:
             return int(raw)
     return DEFAULT_AUTHORIZER_PORT
+
+
+def resolve_authorizer_health_port(authorizer_port: int | None = None) -> int:
+    """Loopback health port, separate from the warrant-enforcing listener."""
+    raw = os.environ.get(AUTHORIZER_HEALTH_PORT_ENV, "").strip()
+    if raw:
+        return int(raw)
+    port = authorizer_port if authorizer_port is not None else resolve_authorizer_port()
+    if port >= 65535:
+        raise ValueError(f"{AUTHORIZER_HEALTH_PORT_ENV} is required when the authorizer uses 65535")
+    return port + 1
 
 
 def managed_install_root() -> Path:
@@ -495,6 +507,7 @@ def start_native(
     mount: Path,
     gateway_name: str,
     port: int,
+    health_port: int,
     authz_url: str,
     denv: dict[str, str],
     srl_name: str | None,
@@ -547,6 +560,8 @@ def start_native(
             "--config", str(gw.resolve()),
             "--port", str(port),
             "--bind", "127.0.0.1",
+            "--health-port", str(health_port),
+            "--health-bind", "127.0.0.1",
         ]
     with log_path.open("a", encoding="utf-8") as logfh:
         logfh.write(f"\n--- native authorizer start {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} ---\n")
