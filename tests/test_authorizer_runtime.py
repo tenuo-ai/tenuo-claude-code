@@ -55,6 +55,16 @@ def test_resolve_authorizer_port_legacy_fallback(monkeypatch):
     assert art.resolve_authorizer_port() == 9092
 
 
+def test_resolve_authorizer_health_port_is_separate(monkeypatch):
+    monkeypatch.delenv(art.AUTHORIZER_HEALTH_PORT_ENV, raising=False)
+    assert art.resolve_authorizer_health_port(9090) == 9091
+
+
+def test_resolve_authorizer_health_port_env(monkeypatch):
+    monkeypatch.setenv(art.AUTHORIZER_HEALTH_PORT_ENV, "9191")
+    assert art.resolve_authorizer_health_port(9090) == 9191
+
+
 def test_choose_backend_flags():
     args = argparse.Namespace(native=True, docker=False)
     assert art.choose_backend(args) == "native"
