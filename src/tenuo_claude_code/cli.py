@@ -4212,7 +4212,11 @@ def _status_json():
                 return None
             status, raw = _UDSConnection(loc, timeout=3).request("GET", "/status")
             return json.loads(raw.decode()) if status == 200 else None
-        with urllib.request.urlopen(loc + "/status", timeout=3) as resp:
+        # Since authorizer 0.3.5, unauthenticated health and status endpoints
+        # live on the separate health listener. Keep custom/remote endpoints
+        # unchanged; only the locally managed authorization URL is remapped.
+        status_loc = HEALTH_URL if loc == AUTHZ_URL else loc
+        with urllib.request.urlopen(status_loc + "/status", timeout=3) as resp:
             return json.loads(resp.read().decode())
     except Exception:
         return None
