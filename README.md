@@ -94,10 +94,16 @@ Add the server to Claude Code as usual, then scope it. For the GitHub MCP server
 
 ```bash
 tenuo-claude init --pack github-mcp --param owner=myorg --param repos='service-*' --param approver=any-human
+```
+
+The pack starts in `mode: dry-run`, which logs decisions but does not block calls. Review the generated `tenuo.yaml`, change it to `mode: enforce`, then apply it and start the authorizer:
+
+```bash
+tenuo-claude refresh
 tenuo-claude up
 ```
 
-Reads and ordinary writes are limited to `myorg/service-*`; merges, pushes and file writes need a human approval (Tenuo Cloud; locally they are denied); everything else is denied. For another server, list its tools under `mcp.enforce` with a constraint per argument; see [Policy](#policy).
+In enforce mode, reads and ordinary writes are limited to `myorg/service-*`; merges, pushes and file writes need a human approval (Tenuo Cloud; locally they are denied); everything else is denied. For another server, list its tools under `mcp.enforce` with a constraint per argument; see [Policy](#policy).
 
 **For Cloud mode** (org root, revocation, human approval):
 
