@@ -70,7 +70,7 @@ sudo cp managed-mcp.json       "/etc/claude-code/managed-mcp.json"   # if genera
 # Authorizer side:
 sudo install -d -m 0755 -o root /etc/tenuo /etc/tenuo/gateway
 sudo install -m 0600 -o root authorizer.env /etc/tenuo/authorizer.env
-sudo install -m 0644 -o root .state/gateway.yaml /etc/tenuo/gateway/gateway.yaml  # routes (no keys)
+sudo install -m 0644 -o root "$(tenuo-claude state-dir)/gateway.yaml" /etc/tenuo/gateway/gateway.yaml  # routes (no keys)
 
 # Linux (Docker-backed authorizer), default path:
 sudo cp tenuo-authorizer.service /etc/systemd/system/
@@ -144,7 +144,7 @@ Managed mode needs both.
 
 The pinned managed hook (`_managed-hook` / `_managed-mcp-proxy`) also forces
 `enforce` regardless of local `mode:`/flag edits, ignores the editable
-`.state/state.json` `authorizer_url` override, and reaches the authorizer over a
+`<state>/state.json` `authorizer_url` override, and reaches the authorizer over a
 **root-owned Unix socket** (never loopback TCP), so a user-controlled substitute
 cannot answer.
 
