@@ -63,7 +63,7 @@ tenuo-claude bootstrap --native --pack filesystem-dev
 claude
 ```
 
-That's it. `bootstrap` with `--pack filesystem-dev` generates a safe starter policy (read/write your project, run safe commands), starts the authorizer, and runs a self-test. Open Claude Code, try something in-scope (it works) and out-of-scope (it's denied). Then:
+That's it. `bootstrap` with `--pack filesystem-dev` generates a starter policy (read and edit your project, keep Tenuo's keys and hook wiring out of reach, a minimal shell), starts the authorizer, and runs a self-test. Open Claude Code, try something in-scope (it works) and out-of-scope (it's denied). Then:
 
 ```bash
 tenuo-claude audit --verify
@@ -74,8 +74,9 @@ to see the signed decision log.
 ### What the quickstart does
 
 1. **`--pack filesystem-dev`** generates a preconfigured policy:
-   - Read/write files in your project directory
-   - Run: ls, pwd, cat, grep (safe commands)
+   - Read, edit and search files in your project directory (paths resolved, symlinks followed)
+   - Never read or change Tenuo's own files: `.state/` keys, `tenuo.yaml`, `.mcp.json`, `.claude/settings*.json`
+   - Run only `ls` and `pwd` in the shell; add your test and build commands to `Bash:`. The shell check covers the command name, not its paths, so list only commands you'd allow on any path
    - Deny everything else by default
    - Start in `mode: dry-run` (log, don't block)
 
@@ -92,7 +93,7 @@ tenuo-claude refresh
 ```
 
 **Available policy packs:**
-- `filesystem-dev` — Read/write project files, safe commands (default)
+- `filesystem-dev` — Read/write project files, minimal shell (default)
 - `github-mcp` — GitHub MCP server, constrained API queries
 - `http-api-safe` — WebFetch with SSRF protection and domain allowlists
 
