@@ -1,0 +1,2 @@
+# This shell entry point must also run from Windows checkouts copied into WSL.
+/plugins/tenuo/scripts/tenuo-hook text eol=lf

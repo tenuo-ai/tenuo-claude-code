@@ -46,6 +46,8 @@ under `/Users/` or `C:\`.
 | `src/tenuo_claude_code/admin.py` | One-time Cloud setup (`tenuo-admin`) |
 | `src/tenuo_claude_code/verify.py` | Policy-driven authorizer self-test |
 | `src/tenuo_claude_code/data/harness_tools.yaml` | Bundled audit-allow tool list |
+| `plugins/tenuo/` | Claude Code plugin (hooks, launcher, `/tenuo:*` skills); decision table tested in `tests/test_plugin_launcher.py` |
+| `.claude-plugin/marketplace.json` | Marketplace entry so `/plugin marketplace add` works on this repo |
 
 Root `scripts/tenuo_claude.py` / `scripts/tenuo_admin.py` are thin shims; prefer `tenuo-claude` on PATH.
 
@@ -61,6 +63,9 @@ or `PYPI_TOKEN` secret).
 Release steps:
 
 1. Bump `version` in `pyproject.toml`, `src/tenuo_claude_code/__init__.py`, and `uv.lock`.
+   If anything under `plugins/tenuo/` changed, also bump `version` in
+   `plugins/tenuo/.claude-plugin/plugin.json` (installed plugins only update when it changes)
+   and run `claude plugin validate . --strict` and `claude plugin validate plugins/tenuo --strict`.
 2. Commit (`Release X.Y.Z`) and push the `vX.Y.Z` tag (this triggers the PyPI publish).
 3. Always publish brief release notes:
    `gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes "<one short paragraph or a few bullets>"`.

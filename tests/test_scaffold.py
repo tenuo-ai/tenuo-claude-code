@@ -129,6 +129,7 @@ def _make_cfg(mcp=False):
 def _patch_wiring(monkeypatch, tmp_path):
     """Patch module-level globals needed by write_claude_wiring / wiring_command_parts."""
     monkeypatch.setattr(cli, "DEMO_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(cli, "STATE", tmp_path / ".state", raising=False)
     monkeypatch.setattr(cli, "APPROVAL_POLL_SECONDS", 30, raising=False)
     monkeypatch.setattr(cli, "LAUNCHER", tmp_path / "bin" / "tenuo-claude", raising=False)
     monkeypatch.setattr(cli, "LAUNCHER_REL", "./bin/tenuo-claude", raising=False)

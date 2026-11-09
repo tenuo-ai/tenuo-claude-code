@@ -1,0 +1,26 @@
+{
+  "name": "tenuo",
+  "owner": {
+    "name": "Tenuo",
+    "email": "daniel@tenuo.ai",
+    "url": "https://tenuo.ai"
+  },
+  "description": "Tenuo plugins for Claude Code.",
+  "plugins": [
+    {
+      "name": "tenuo",
+      "displayName": "Tenuo",
+      "source": "./plugins/tenuo",
+      "description": "Task-scoped authorization for Claude Code: warrants constrain tools and arguments before each call, with signed receipts. Inactive until a project opts in with tenuo.yaml.",
+      "author": {
+        "name": "Tenuo",
+        "url": "https://tenuo.ai"
+      },
+      "homepage": "https://tenuo.ai",
+      "repository": "https://github.com/tenuo-ai/tenuo-claude-code",
+      "license": "Apache-2.0",
+      "category": "security",
+      "tags": ["security", "authorization", "governance", "audit"]
+    }
+  ]
+}

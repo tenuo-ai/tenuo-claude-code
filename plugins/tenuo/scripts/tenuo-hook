@@ -1,0 +1,88 @@
+#!/bin/sh
+# Entry point for the Tenuo plugin hooks (see hooks/hooks.json).
+#
+# Runs the stdlib-only launcher (tenuo_plugin.py) with python3. If no usable
+# python3 exists, fall back to a minimal shell check so that an opted-in
+# project still fails closed while every other project stays untouched.
+# Usage: tenuo-hook pre|post|session-start
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+mode=${1:-}
+
+# TENUO_PLUGIN_PYTHON pins the interpreter (no fallback to others).
+if [ -n "${TENUO_PLUGIN_PYTHON:-}" ]; then
+  interpreters=$TENUO_PLUGIN_PYTHON
+else
+  interpreters="python3 /usr/bin/python3 python"
+fi
+for py in $interpreters; do
+  if command -v "$py" >/dev/null 2>&1; then
+    "$py" "$here/tenuo_plugin.py" "$@"
+    rc=$?
+    # The launcher only ever exits 0 or 2. Any other code means this
+    # interpreter could not run it (missing, too old, macOS stub), so try the
+    # next one and finally the shell fallback below.
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
+      exit "$rc"
+    fi
+  fi
+done
+
+[ "$mode" = "pre" ] || exit 0
+
+# Without Python, resolve state using the same project-path hash as the CLI.
+find_root() {
+  d=$1
+  while [ -n "$d" ]; do
+    if [ -f "$d/tenuo.yaml" ]; then
+      printf '%s' "$d"
+      return 0
+    fi
+    [ "$d" = "/" ] && return 1
+    d=$(dirname -- "$d")
+  done
+  return 1
+}
+root=""
+if [ -n "${TENUO_PROJECT_DIR:-}" ]; then
+  root=$TENUO_PROJECT_DIR
+else
+  for start in "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
+    [ -n "$start" ] || continue
+    root=$(find_root "$start") && break
+    root=""
+  done
+fi
+[ -n "$root" ] || exit 0
+root=$(CDPATH= cd -- "$root" 2>/dev/null && pwd -P) || exit 2
+state=${TENUO_STATE_DIR:-}
+if [ -z "$state" ]; then
+  digest=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$root" | sha256sum)
+  elif command -v shasum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$root" | shasum -a 256)
+  fi
+  if [ -n "$digest" ]; then
+    digest=$(printf '%.12s' "$digest")
+    name=$(basename -- "$root" | LC_ALL=C tr '[:upper:]_ ' '[:lower:]--' | LC_ALL=C sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-//; s/-$//' | cut -c1-64)
+    name=${name:-tenuo-claude}
+    state="$HOME/.tenuo/projects/$name-$digest"
+    if [ ! -d "$state" ] && [ -f "$root/.state/state.json" ]; then
+      state="$root/.state"
+    fi
+  fi
+fi
+case "$state" in
+  '~') state=$HOME ;;
+  '~/'*) state="$HOME/${state#'~/'}" ;;
+esac
+if [ -n "$state" ]; then
+  [ -d "$state" ] || exit 0
+  [ -e "$state/disabled" ] && exit 0
+fi
+# Do not guess hook coverage by grepping JSON. Without a parser, a partial
+# matcher or an unrelated string must never suppress this fail-closed guard.
+reason="Tenuo governs $root but python3 was not found, so the Tenuo hook cannot run (fail-closed). Install python3 and tenuo-claude-code, or run tenuo-claude disable."
+printf '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "%s"}}\n' "$reason"
+printf '%s\n' "$reason" >&2
+exit 2

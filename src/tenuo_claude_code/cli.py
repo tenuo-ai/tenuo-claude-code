@@ -2865,6 +2865,31 @@ def _merge_hook_list(existing: list, tenuo_entry: dict, subcommand: str) -> list
     return merged
 
 
+# Marker that `disable` leaves in the resolved state directory so the Claude Code plugin's hooks
+# (plugins/tenuo) stand down too. Without it, a project with `tenuo.yaml` and
+# `.state/` but no settings wiring looks "opted in" to the plugin, which would
+# then enforce against a stopped authorizer. `init`/`refresh`/`up` clear it.
+DISABLED_MARKER_NAME = "disabled"
+
+
+def _disabled_marker() -> Path:
+    return STATE / DISABLED_MARKER_NAME
+
+
+def set_disabled_marker(disabled: bool) -> None:
+    marker = _disabled_marker()
+    try:
+        if disabled:
+            if marker.parent.is_dir():
+                marker.write_text(
+                    "Tenuo governance disabled by `tenuo-claude disable`. "
+                    "Re-enable with `tenuo-claude up` or `tenuo-claude init`.\n")
+        elif marker.exists():
+            marker.unlink()
+    except OSError:
+        pass
+
+
 def write_claude_wiring(cfg: dict) -> None:
     """Merge Tenuo hooks into .claude/settings.json and Tenuo server into .mcp.json.
 
@@ -2872,6 +2897,7 @@ def write_claude_wiring(cfg: dict) -> None:
     other hooks, other MCP servers) are left untouched.  Re-run ``init`` /
     ``refresh`` after moving the repo or changing the install path.
     """
+    set_disabled_marker(False)
     claude_dir = DEMO_DIR / ".claude"
     claude_dir.mkdir(exist_ok=True)
     hook_timeout = APPROVAL_POLL_SECONDS + 30 if has_approval_gates(cfg) else 30
@@ -4329,6 +4355,8 @@ def cmd_up(_args) -> None:
 
     if not WARRANT.exists() and not use_trigger:
         raise SystemExit("Run `tenuo-claude init` first.")
+    # `up` is the documented way back from `disable`: re-arm the plugin hooks.
+    set_disabled_marker(False)
     refreshed = False
     if warrant_expired() or (use_trigger and not WARRANT.exists()):
         # Re-apply tenuo.yaml (reuse issuer locally; re-fire trigger on Cloud).
@@ -4450,6 +4478,7 @@ def cmd_disable(_args) -> None:
     re-wire with `init`). Works even if `tenuo.yaml` is missing or broken."""
     cfg = _teardown_cfg()
     changes = remove_claude_wiring()
+    set_disabled_marker(True)
     stopped = _stop_authorizer(cfg)
     if changes:
         for line in changes:
@@ -4495,6 +4524,7 @@ def cmd_uninstall(args) -> None:
     if stopped:
         print("  stopped authorizer")
     if keep_state:
+        set_disabled_marker(True)
         print(f"  kept {state_label()} (--keep-state)")
     else:
         import shutil as _shutil

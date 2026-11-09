@@ -1,0 +1,41 @@
+{
+  "description": "Tenuo governance hooks. They do nothing unless the project has an initialized tenuo.yaml; see scripts/tenuo_plugin.py for the decision table.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook\" session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook\" pre",
+            "timeout": 240
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook\" post",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
