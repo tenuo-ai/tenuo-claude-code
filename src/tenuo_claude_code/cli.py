@@ -1764,27 +1764,41 @@ def tenuo_file_target(tool: str, tin: dict) -> str | None:
     if tool not in PATH_TOOLS:
         return None
     value = (tin or {}).get(TOOL_DEFAULTS[tool][2])
+
+    # realpath resolves symlinks but keeps the spelling it was given, and the
+    # default macOS and Windows filesystems ignore case: `TENUO.yaml` is the same
+    # file. Compare case-folded, so an alternate spelling is caught whether or not
+    # the file exists yet. (On a case-sensitive filesystem this also refuses a
+    # differently-cased sibling of a protected name, which is fine.)
+    def fold(path) -> str:
+        return os.path.realpath(path).casefold()
+
     project = os.path.realpath(DEMO_DIR)
+    in_project = fold(os.path.join(project, ".state"))
+    state_dirs = {fold(STATE): STATE, in_project: os.path.join(project, ".state")}
+
+    def label(folded: str) -> str:
+        return ".state" if folded == in_project else "~/.tenuo state"
+
     if tool == "Grep":
         # Grep reads file contents below its root (the cwd when `path` is omitted),
         # so a root that contains a state directory would read the keys in it.
-        root = os.path.realpath(os.path.abspath(value if isinstance(value, str) and value else os.getcwd()))
-        for state_dir in {os.path.realpath(STATE), os.path.realpath(os.path.join(project, ".state"))}:
-            if os.path.isdir(state_dir) and state_dir.startswith(root.rstrip(os.sep) + os.sep):
-                where = ".state" if state_dir.startswith(project + os.sep) else "~/.tenuo state"
-                return f"{where} (inside this search root)"
+        root = fold(os.path.abspath(value if isinstance(value, str) and value else os.getcwd()))
+        for folded, real in state_dirs.items():
+            if os.path.isdir(real) and folded.startswith(root.rstrip(os.sep) + os.sep):
+                return f"{label(folded)} (inside this search root)"
     if not isinstance(value, str) or not value:
         return None
-    target = os.path.realpath(os.path.abspath(value))
-    for state_dir in {os.path.realpath(STATE), os.path.realpath(os.path.join(project, ".state"))}:
-        if target == state_dir or target.startswith(state_dir + os.sep):
-            return ".state" if state_dir.startswith(project + os.sep) else "~/.tenuo state"
+    target = fold(os.path.abspath(value))
+    for folded in state_dirs:
+        if target == folded or target.startswith(folded + os.sep):
+            return label(folded)
     owned = ("tenuo.yaml", "tenuo.cloud.yaml", "tenuo.advanced.yaml", ".mcp.json",
              os.path.join(".claude", "settings.json"), os.path.join(".claude", "settings.local.json"),
              # A project-local launcher is what the hooks run when it exists.
              os.path.join("bin", BIN_LAUNCHER))
     for rel in owned:
-        if target == os.path.realpath(os.path.join(project, rel)):
+        if target == fold(os.path.join(project, rel)):
             return rel
     return None
 
@@ -4137,7 +4151,7 @@ def _record_fired_warrant(warrant_b64: str) -> None:
 
 def cmd_install_authorizer(args) -> None:
     """Install the pinned ``tenuo-authorizer`` binary to ``~/.tenuo/bin``."""
-    image = DEFAULT_AUTHZ_IMAGE
+    image = authorizer_image({})   # no policy yet: TENUO_AUTHORIZER_IMAGE or the default
     try:
         bind_project_paths(sys.modules[__name__])
         try:
