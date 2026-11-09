@@ -215,6 +215,7 @@ def test_cloud_bootstrap_missing_token_does_not_scaffold(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "tenuo.yaml", raising=False)
     monkeypatch.setattr(cli, "CLOUD_ENV", state / "cloud.env", raising=False)
     monkeypatch.setattr(cli, "ADMIN_ENV", tmp_path / "home" / ".tenuo" / "admin.env", raising=False)
+    monkeypatch.setattr(cli, "_bootstrap_needs_native_install", lambda args: False)
 
     with pytest.raises(SystemExit, match="TENUO_CONNECT_TOKEN"):
         cli.cmd_bootstrap(argparse.Namespace(

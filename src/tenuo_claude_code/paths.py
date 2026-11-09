@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -18,6 +19,8 @@ __all__ = [
     "default_policy_name",
     "find_project_root",
     "harness_tools_file",
+    "legacy_state_dir",
+    "project_state_dir",
     "scaffold_example_policy",
 ]
 
@@ -143,11 +146,50 @@ def template_file(name: str, project_root: Path | None = None) -> Path:
     return root / "templates" / name
 
 
+LEGACY_STATE_DIRNAME = ".state"
+
+
+def legacy_state_dir(project_root: Path) -> Path:
+    """Where state lived before it moved out of the project (``<project>/.state``)."""
+    return project_root / LEGACY_STATE_DIRNAME
+
+
+def home_state_dir(project_root: Path) -> Path:
+    """Per-project state directory under ``~/.tenuo/projects``.
+
+    Keys, warrant, gateway and receipts live outside the governed project so
+    nothing scoped to the project tree (a recursive search included) can reach
+    them. The name is the project basename plus a hash of its resolved path.
+    """
+    root = project_root.resolve()
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
+    return Path.home() / ".tenuo" / "projects" / f"{default_policy_name(root)}-{digest}"
+
+
+def project_state_dir(project_root: Path) -> Path:
+    """Resolve the state directory: ``TENUO_STATE_DIR`` → home → not-yet-migrated legacy.
+
+    The home directory wins as soon as it exists, so a ``.state`` that appears in
+    the project later is never picked up. A project initialized by an older
+    release keeps working from ``<project>/.state`` until ``init``/``refresh``
+    moves it.
+    """
+    override = os.environ.get("TENUO_STATE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    home = home_state_dir(project_root)
+    legacy = legacy_state_dir(project_root)
+    if not home.is_dir() and (legacy / "state.json").is_file():
+        return legacy
+    return home
+
+
 def bind_project_paths(module, *, fallback_cwd: bool = False) -> None:
     """Bind project-scoped path globals on *module* (typically ``cli``)."""
     root = find_project_root(fallback_cwd=fallback_cwd)
     module.DEMO_DIR = root
-    module.STATE = root / ".state"
+    module.STATE = project_state_dir(root)
+    module.LEGACY_STATE = legacy_state_dir(root)
     module.CONFIG_FILE = root / "tenuo.yaml"
     module.CLOUD_PROFILE = root / "tenuo.cloud.yaml"
     module.ADVANCED_PROFILE = root / "tenuo.advanced.yaml"

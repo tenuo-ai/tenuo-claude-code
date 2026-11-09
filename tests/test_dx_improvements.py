@@ -179,6 +179,27 @@ def test_audit_row_shows_multiple_key_args(cli_mod, bound, monkeypatch, capsys):
     assert "target=prod" in out
 
 
+def test_audit_row_shows_mcp_arguments(cli_mod, bound, monkeypatch, capsys):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    cli_mod.ensure_state_dir()
+    cli_mod.RECEIPTS.write_text(json.dumps({
+        "payload": {
+            "phase": "pre",
+            "decision": "deny",
+            "claude_tool": "mcp__github__get_file_contents",
+            "tenuo_tool": "get_file_contents",
+            "reason": "Constraint not satisfied",
+            "args": {"owner": "torvalds", "repo": "linux", "path": "README", "body": "x" * 200},
+        }
+    }) + "\n")
+
+    cli_mod.cmd_audit(type("Args", (), {"verify": False, "tail": None})())
+    out = capsys.readouterr().out
+
+    assert "owner=torvalds path=README repo=linux" in out
+    assert "body=" not in out
+
+
 def test_write_receipt_chain_survives_concurrent_writers(cli_mod, bound, monkeypatch):
     # Native-tool hooks and the MCP proxy write receipts from separate execution
     # contexts. First-use key generation and read-prev-hash + append must be

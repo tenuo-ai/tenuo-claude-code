@@ -27,7 +27,7 @@ A brand-new tenant has no signing keys yet, and warrants cannot be issued until 
 
    | Key | From | Goes in |
    |-----|------|---------|
-   | **Runtime** (`tenuo_ct_…`) | Agents → Quick Connect → **Authorizer Only** | `.state/cloud.env` |
+   | **Runtime** (`tenuo_ct_…`) | Agents → Quick Connect → **Authorizer Only** | `<state>/cloud.env` |
    | **Tenant-admin** (`tc_…`) | Settings → API Keys → Create (admin role) | `~/.tenuo/admin.env` |
 
 3. Run `tenuo-claude bootstrap --cloud` (first run needs both keys; later sessions need only the runtime token). Behind the scenes, `tenuo-admin setup` registers this project's holder agent, creates or updates a Cloud trigger from `tenuo.yaml`, binds the holder agent to that trigger, and fires it once to mint a root-signed session warrant. Cloud's Claude Code starter template is guidance for this shape; the project trigger is still compiled from local policy. Full reference: [README § Cloud mode](../README.md#cloud-mode).

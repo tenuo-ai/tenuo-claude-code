@@ -54,7 +54,7 @@ project directory (e.g. `demo/`).
 
 ### Can I run plain `bootstrap` on the reference demo?
 
-**No**, if `.state/cloud.env` or `tenuo.cloud.yaml` already exists. Plain
+**No**, if `<state>/cloud.env` or `tenuo.cloud.yaml` already exists. Plain
 `bootstrap` switches to local mode and moves Cloud files aside (`.bak`).
 
 Use `tenuo-claude check && tenuo-claude up`, or re-onboard with
@@ -68,7 +68,7 @@ Use `tenuo-claude check && tenuo-claude up`, or re-onboard with
 
 | Key | File | Used by |
 |-----|------|---------|
-| **Runtime** (Quick Connect, Authorizer Only) | `.state/cloud.env` | `tenuo-claude up`, hooks, trigger fire |
+| **Runtime** (Quick Connect, Authorizer Only) | `<state>/cloud.env` | `tenuo-claude up`, hooks, trigger fire |
 | **Tenant admin** | `~/.tenuo/admin.env` | `tenuo-admin setup` only |
 
 Runtime must **never** see the admin key; `tenuo-claude` refuses to start if
@@ -77,13 +77,13 @@ Runtime must **never** see the admin key; `tenuo-claude` refuses to start if
 ### Quick Connect: Authorizer Only or Agent + Authorizer?
 
 Use **Authorizer Only**. The hook signs proof-of-possession with a local holder key
-(`.state/holder_key.b64`) that `tenuo-admin setup` registers on Cloud. **Agent +
+(`<state>/holder_key.b64`) that `tenuo-admin setup` registers on Cloud. **Agent +
 Authorizer** auto-claims a different key and breaks warrant alignment.
 
 ### I pasted an `ak_…` value and auth fails
 
 `ak_…` entries in the dashboard are **key IDs**, not secrets. Use the Quick Connect
-token (`tenuo_ct_…`) or the Manual tab `tc_…` bearer key in `.state/cloud.env`.
+token (`tenuo_ct_…`) or the Manual tab `tc_…` bearer key in `<state>/cloud.env`.
 
 ### `Invalid TENUO_CONNECT_TOKEN: base64 decode error`
 
@@ -113,7 +113,7 @@ on `up`.
 
 ### `Holder signing key mismatch` / `DelegationAuthorityError`
 
-Local `.state/holder_key.b64` drifted from the key claimed on Cloud (e.g. re-ran
+Local `<state>/holder_key.b64` drifted from the key claimed on Cloud (e.g. re-ran
 `init` or plain `bootstrap` after Cloud was configured).
 
 **Fix:**
@@ -221,13 +221,13 @@ tenuo-claude disable      # unwire hooks + stop authorizer; keeps policy/warrant
 tenuo-claude up
 ```
 
-To remove everything (also deletes `.state/`: warrant, keys, gateway, receipts,
+To remove everything (also deletes the state directory: warrant, keys, gateway, receipts,
 Cloud credentials; `tenuo.yaml` is left untouched):
 
 ```bash
 tenuo-claude uninstall            # prompts first
 tenuo-claude uninstall --yes      # no prompt
-tenuo-claude uninstall --keep-state   # unwire + stop, but keep .state
+tenuo-claude uninstall --keep-state   # unwire + stop, but keep the state directory
 ```
 
 ### My agent is blocked but I'm in Cursor, not Claude Code

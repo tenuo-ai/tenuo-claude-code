@@ -63,6 +63,7 @@ def make_project(root: Path, *, state=True, disabled=False) -> Path:
     (root / "tenuo.yaml").write_text("name: test\n")
     if state:
         (root / ".state").mkdir(exist_ok=True)
+        (root / ".state" / "state.json").write_text("{}")
     if disabled:
         (root / ".state" / "disabled").write_text("disabled\n")
     return root
@@ -79,6 +80,7 @@ def fake_cli(path: Path, body: str) -> Path:
 def wire_like_bootstrap(monkeypatch, project: Path) -> None:
     """Write .claude/settings.json with the REAL bootstrap wiring code."""
     monkeypatch.setattr(cli, "DEMO_DIR", project, raising=False)
+    monkeypatch.setattr(cli, "STATE", project / ".state", raising=False)
     monkeypatch.setattr(cli, "APPROVAL_POLL_SECONDS", 30, raising=False)
     monkeypatch.setattr(cli, "LAUNCHER", project / "bin" / "tenuo-claude", raising=False)
     monkeypatch.setattr(cli, "LAUNCHER_REL", "./bin/tenuo-claude", raising=False)
@@ -467,3 +469,52 @@ def test_disable_without_state_writes_no_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "managed_mode", lambda _cfg: False)
     cli.cmd_disable(types.SimpleNamespace())
     assert not (proj / ".state").exists()
+
+
+@pytest.mark.parametrize("matcher", ["Read", "Read|Edit", "mcp__.*"])
+def test_partial_wiring_never_disables_plugin(tmp_path, env, matcher):
+    proj = make_project(tmp_path / "p")
+    (proj / ".claude").mkdir()
+    (proj / ".claude/settings.json").write_text(json.dumps({"hooks": {"PreToolUse": [
+        {"matcher": matcher, "hooks": [{"type": "command", "command": "tenuo-claude _hook"}]}]}}))
+    fake_cli(proj / ".venv/bin/tenuo-claude", "exit 2")
+    event = {"cwd": str(proj), "tool_name": "Bash", "tool_input": {"command": "pwd"}}
+    assert tp.decide(event, env)[0] == tp.DELEGATE
+    assert run_hook("pre", event, env, proj).returncode == 2
+    assert run_hook("pre", event, {**env, "TENUO_PLUGIN_PYTHON": "/missing"}, proj).returncode == 2
+
+
+@pytest.mark.parametrize("name", ["project", "My_Project !", "a" * 80])
+def test_plugin_state_matches_cli_and_survives_migration(tmp_path, env, monkeypatch, name):
+    from tenuo_claude_code import paths
+    proj = make_project(tmp_path / name)
+    monkeypatch.setenv("HOME", env["HOME"])
+    monkeypatch.delenv("TENUO_STATE_DIR", raising=False)
+    assert tp.project_state_dir(proj, env) == paths.project_state_dir(proj)
+    state = paths.home_state_dir(proj)
+    state.parent.mkdir(parents=True, exist_ok=True)
+    (proj / ".state").rename(state)
+    assert tp.project_state_dir(proj, env) == paths.project_state_dir(proj) == state
+    event = {**PRE_EVENT, "cwd": str(proj)}
+    assert tp.decide(event, env)[0] == tp.DENY_CLI_MISSING
+    assert_deny(run_hook("pre", event, env, proj), "CLI was not found")
+    no_python = {**env, "TENUO_PLUGIN_PYTHON": "/missing"}
+    assert_deny(run_hook("pre", event, no_python, proj), "python3 was not found")
+    monkeypatch.setattr(cli, "STATE", state, raising=False)
+    cli.set_disabled_marker(True)
+    assert tp.decide(event, env)[0] == tp.NOOP_DISABLED
+    assert run_hook("pre", event, no_python, proj).returncode == 0
+    cli.set_disabled_marker(False)
+    assert tp.decide(event, env)[0] == tp.DENY_CLI_MISSING
+
+
+def test_plugin_state_override(tmp_path, env, monkeypatch):
+    from tenuo_claude_code import paths
+    proj = make_project(tmp_path / "p")
+    state = tmp_path / "custom-state"
+    state.mkdir()
+    env = {**env, "TENUO_STATE_DIR": str(state)}
+    monkeypatch.setenv("TENUO_STATE_DIR", str(state))
+    assert tp.project_state_dir(proj, env) == paths.project_state_dir(proj) == state
+    (state / "disabled").write_text("disabled")
+    assert tp.decide({"cwd": str(proj)}, env)[0] == tp.NOOP_DISABLED

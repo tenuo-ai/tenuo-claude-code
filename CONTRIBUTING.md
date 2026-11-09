@@ -20,7 +20,7 @@ Re-run `init` or `refresh` after switching Python venvs (hooks pin `sys.executab
 2. Keep changes focused; match existing style in `src/tenuo_claude_code/`.
 3. Run `uv run --with pytest pytest` (fast unit tests, no Docker). If you touch enforcement
    or policy wiring, also run `cd demo && tenuo-claude verify` (live authorizer).
-4. Do not commit `.state/`, real API keys, or home-directory paths.
+4. Do not commit a legacy the state directory directory, real API keys, or home-directory paths.
 
 Security issues: see [SECURITY.md](SECURITY.md). No public issues for vulnerabilities.
 
@@ -28,7 +28,7 @@ Security issues: see [SECURITY.md](SECURITY.md). No public issues for vulnerabil
 
 | Path | Contains |
 |------|----------|
-| `.state/` | Holder/issuer keys, warrant, receipts, `cloud.env` |
+| state directory (`tenuo-claude state-dir`) | Holder/issuer keys, warrant, receipts, `cloud.env` |
 | `.claude/settings.json` | Generated hook wiring |
 | `~/.tenuo/admin.env` | Admin key for `tenuo-admin setup` only |
 

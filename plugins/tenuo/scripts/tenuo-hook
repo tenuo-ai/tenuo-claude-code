@@ -29,7 +29,7 @@ done
 
 [ "$mode" = "pre" ] || exit 0
 
-# No python3: opted in means tenuo.yaml + .state/ and no disable marker.
+# Without Python, resolve state using the same project-path hash as the CLI.
 find_root() {
   d=$1
   while [ -n "$d" ]; do
@@ -53,15 +53,35 @@ else
   done
 fi
 [ -n "$root" ] || exit 0
-[ -d "$root/.state" ] || exit 0
-[ -e "$root/.state/disabled" ] && exit 0
-# Hooks wired by tenuo-claude init/bootstrap already enforce; stand down.
-for f in "${CLAUDE_PROJECT_DIR:-$root}/.claude/settings.json" \
-         "${CLAUDE_PROJECT_DIR:-$root}/.claude/settings.local.json"; do
-  if [ -f "$f" ] && grep -q 'tenuo' "$f" && grep -Eq '[ "'"'"']_(managed-)?hook' "$f"; then
-    exit 0
+root=$(CDPATH= cd -- "$root" 2>/dev/null && pwd -P) || exit 2
+state=${TENUO_STATE_DIR:-}
+if [ -z "$state" ]; then
+  digest=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$root" | sha256sum)
+  elif command -v shasum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$root" | shasum -a 256)
   fi
-done
+  if [ -n "$digest" ]; then
+    digest=$(printf '%.12s' "$digest")
+    name=$(basename -- "$root" | LC_ALL=C tr '[:upper:]_ ' '[:lower:]--' | LC_ALL=C sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-//; s/-$//' | cut -c1-64)
+    name=${name:-tenuo-claude}
+    state="$HOME/.tenuo/projects/$name-$digest"
+    if [ ! -d "$state" ] && [ -f "$root/.state/state.json" ]; then
+      state="$root/.state"
+    fi
+  fi
+fi
+case "$state" in
+  '~') state=$HOME ;;
+  '~/'*) state="$HOME/${state#'~/'}" ;;
+esac
+if [ -n "$state" ]; then
+  [ -d "$state" ] || exit 0
+  [ -e "$state/disabled" ] && exit 0
+fi
+# Do not guess hook coverage by grepping JSON. Without a parser, a partial
+# matcher or an unrelated string must never suppress this fail-closed guard.
 reason="Tenuo governs $root but python3 was not found, so the Tenuo hook cannot run (fail-closed). Install python3 and tenuo-claude-code, or run tenuo-claude disable."
 printf '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "%s"}}\n' "$reason"
 printf '%s\n' "$reason" >&2

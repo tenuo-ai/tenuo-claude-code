@@ -85,8 +85,10 @@ jobs:
           mkdir -p "$tmp/workspace"
           touch "$tmp/workspace/notes.txt"
           TENUO_PROJECT_DIR="$tmp" uv run tenuo-claude init
-          test -f "$tmp/.state/warrant.b64"
-          test -f "$tmp/.state/gateway.yaml"
+          state=$(TENUO_PROJECT_DIR="$tmp" uv run tenuo-claude state-dir)
+          test -f "$state/warrant.b64"
+          test -f "$state/gateway.yaml"
+          test ! -e "$tmp/.state"
           test -f "$tmp/.claude/settings.json"
 
       - name: Upload dist artifacts
@@ -133,7 +135,7 @@ jobs:
           mkdir -p "$proj"
           TENUO_PROJECT_DIR="$proj" uv run tenuo-claude bootstrap
           test -f "$proj/tenuo.yaml"
-          test -f "$proj/.state/warrant.b64"
+          test -f "$(TENUO_PROJECT_DIR="$proj" uv run tenuo-claude state-dir)/warrant.b64"
           test -f "$proj/.claude/settings.json"
           echo "TENUO_PROJECT_DIR=$proj" >> "$GITHUB_ENV"
 
@@ -144,7 +146,7 @@ jobs:
         if: failure()
         run: |
           echo "=== authorizer.log ==="
-          cat "$TENUO_PROJECT_DIR/.state/authorizer.log" 2>/dev/null || true
+          cat "$(uv run tenuo-claude state-dir)/authorizer.log" 2>/dev/null || true
 
       - name: down (stop authorizer)
         if: always()
@@ -212,7 +214,7 @@ jobs:
           mkdir -p "$proj"
           TENUO_PROJECT_DIR="$proj" uv run tenuo-claude bootstrap
           test -f "$proj/tenuo.yaml"
-          test -f "$proj/.state/warrant.b64"
+          test -f "$(TENUO_PROJECT_DIR="$proj" uv run tenuo-claude state-dir)/warrant.b64"
           test -f "$proj/.claude/settings.json"
           # WSL networking can lag behind the "Authorizer up" message, so the
           # first verify probe occasionally times out. Wait for /health to answer
@@ -226,7 +228,10 @@ jobs:
       - name: Authorizer logs on failure (in WSL)
         if: failure()
         shell: wsl-bash {0}
-        run: cat "$HOME/governed/.state/authorizer.log" 2>/dev/null || true
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          cd "$HOME/repo"
+          cat "$(TENUO_PROJECT_DIR="$HOME/governed" uv run tenuo-claude state-dir)/authorizer.log" 2>/dev/null || true
 
       - name: down (in WSL)
         if: always()

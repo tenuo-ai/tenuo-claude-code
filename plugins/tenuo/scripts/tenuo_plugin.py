@@ -12,9 +12,9 @@ Decision table for ``pre`` (PreToolUse):
        the hook cwd, or any parent)            -> no output, exit 0 (neutral)
     2. ``TENUO_PROJECT_DIR`` is set but has no ``tenuo.yaml``
                                                -> deny (explicit opt-in is broken)
-    3. Project found, but ``.state/`` is missing (policy present, never
+    3. Project found, but the state directory is missing (policy present, never
        initialized)                            -> no output, exit 0 (neutral)
-    4. Project found, ``.state/disabled`` exists (``tenuo-claude disable``)
+    4. Project found, the state directory’s ``disabled`` marker exists (``tenuo-claude disable``)
                                                -> no output, exit 0 (neutral)
     5. Tenuo hooks already wired by ``tenuo-claude init``/``bootstrap`` in
        project, user, or managed settings      -> no output, exit 0 (the wired
@@ -25,7 +25,7 @@ Decision table for ``pre`` (PreToolUse):
        something that is not a hook decision   -> deny (fail closed)
 
 "Opted in" means rows 1 to 5 did not apply: a ``tenuo.yaml`` plus initialized
-``.state/`` with no bootstrap wiring and no disable marker.
+the state directory with no bootstrap wiring and no disable marker.
 
 A deny is the same JSON as the CLI's fail-closed launcher guard
 (``_GUARD_DENY_JSON``) with an actionable reason, printed to stdout, the reason
@@ -39,7 +39,9 @@ JSON parsing).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -158,8 +160,12 @@ def settings_have_tenuo_hook(settings) -> bool:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
+        # Only universal wiring is sufficient to stand down for every event.
+        # Partial matchers may cover Read while leaving Bash/MCP unguarded.
+        if entry.get("matcher", "*") not in ("", "*"):
+            continue
         for inner in entry.get("hooks") or []:
-            if isinstance(inner, dict) and _is_tenuo_command(str(inner.get("command", ""))):
+            if isinstance(inner, dict) and inner.get("type") == "command" and _is_tenuo_command(str(inner.get("command", ""))):
                 return True
     return False
 
@@ -227,6 +233,26 @@ def find_cli(root: Path | None, env: dict) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def project_state_dir(root: Path, env: dict) -> Path:
+    """Stdlib-only equivalent of the CLI resolver; usable without its install."""
+    override = (env.get("TENUO_STATE_DIR") or "").strip()
+    home = Path(env.get("HOME") or str(Path.home()))
+    if override:
+        if override == "~" or override.startswith("~/"):
+            override = str(home) + override[1:]
+        return Path(override).resolve()
+    root = root.resolve()
+    name = root.name.strip().lower().replace("_", "-").replace(" ", "-")
+    name = re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]+", "-", name)).strip("-")
+    name = name[:64] if name else "tenuo-claude"
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
+    state = home / ".tenuo" / "projects" / f"{name}-{digest}"
+    legacy = root / STATE_DIR
+    if not state.is_dir() and (legacy / "state.json").is_file():
+        return legacy
+    return state
+
+
 def decide(event: dict, env: dict) -> tuple[str, Path | None, str | None, str | None]:
     """Return ``(decision, project_root, cli_path, message)`` for a hook event."""
     root, error = find_project(event, env)
@@ -234,7 +260,7 @@ def decide(event: dict, env: dict) -> tuple[str, Path | None, str | None, str | 
         return DENY_BAD_PROJECT_DIR, None, None, error
     if root is None:
         return NOOP_NO_PROJECT, None, None, None
-    state = root / STATE_DIR
+    state = project_state_dir(root, env)
     if not state.is_dir():
         return NOOP_NOT_INITIALIZED, root, None, None
     if (state / DISABLED_MARKER).exists():

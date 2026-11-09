@@ -63,19 +63,20 @@ tenuo-claude bootstrap --native --pack filesystem-dev
 claude
 ```
 
-That's it. `bootstrap` with `--pack filesystem-dev` generates a safe starter policy (read/write your project, run safe commands), starts the authorizer, and runs a self-test. Open Claude Code, try something in-scope (it works) and out-of-scope (it's denied). Then:
+That's it. `bootstrap` with `--pack filesystem-dev` generates a starter policy (read and edit your project, keep Tenuo's keys and hook wiring out of reach, a minimal shell), starts the authorizer, and runs a self-test. The first run also downloads the pinned authorizer binary to `~/.tenuo/bin`. The pack starts in `mode: dry-run`, so nothing is blocked yet: open Claude Code, work normally, ask for something out of scope (say, reading a file outside the project), then:
 
 ```bash
 tenuo-claude audit --verify
 ```
 
-to see the signed decision log.
+to see the signed decision log, including what would have been denied.
 
 ### What the quickstart does
 
 1. **`--pack filesystem-dev`** generates a preconfigured policy:
-   - Read/write files in your project directory
-   - Run: ls, pwd, cat, grep (safe commands)
+   - Read, edit and search files in your project directory (paths resolved, symlinks followed)
+   - Never read or change Tenuo's own files: its keys and state, `tenuo.yaml`, `.mcp.json`, `.claude/settings*.json`
+   - Run only `ls` and `pwd` in the shell; add your test and build commands to `Bash:`. The shell check covers the command name, not its paths, so list only commands you'd allow on any path
    - Deny everything else by default
    - Start in `mode: dry-run` (log, don't block)
 
@@ -92,7 +93,7 @@ tenuo-claude refresh
 ```
 
 **Available policy packs:**
-- `filesystem-dev` — Read/write project files, safe commands (default)
+- `filesystem-dev` — Read/write project files, minimal shell (default)
 - `github-mcp` — GitHub MCP server, constrained API queries
 - `http-api-safe` — WebFetch with SSRF protection and domain allowlists
 
@@ -126,8 +127,8 @@ How the plugin decides, per tool call:
 | Project state | PreToolUse result |
 |---|---|
 | No `tenuo.yaml` in the session directory or any parent | Nothing (Claude Code permissions apply) |
-| `tenuo.yaml` but no `.state/` (never initialized) | Nothing; session start says to run `bootstrap` |
-| `.state/disabled` present (`tenuo-claude disable`) | Nothing; `tenuo-claude up` or `init` re-arms it |
+| `tenuo.yaml` but no state directory (never initialized) | Nothing; session start says to run `bootstrap` |
+| `<state>/disabled` present (`tenuo-claude disable`) | Nothing; `tenuo-claude up` or `init` re-arms it |
 | Tenuo hooks already wired by `init`/`bootstrap` (project, user, or managed settings) | Nothing; the wired hook enforces, so no double receipts |
 | Initialized, not wired, `tenuo-claude` found | Delegates to `tenuo-claude _hook` |
 | Initialized, not wired, `tenuo-claude` missing, crashing, or timing out | Deny (fail-closed) |
@@ -218,7 +219,8 @@ It does **not** govern:
 ## Fail-Closed Design
 
 - Missing or broken `tenuo.yaml` denies every governed call until restored
-- Private keys under `.state/` are owner-only (`0600`)
+- Private keys are owner-only (`0600`) and kept outside the project
+- In enforce mode a recursive `Grep` runs with the policy and hook wiring files (`tenuo.yaml`, `.mcp.json`, `.claude/settings*.json`) excluded, and is denied if they can't be excluded. Keep secrets out of those files anyway (`${VAR}` references), since `dry-run` blocks nothing
 - A broken receipt sink surfaces loudly (not silent data loss)
 - Cloud-disconnected nodes fall back to local policy (no open bypass)
 
@@ -311,14 +313,17 @@ Day to day: `up` (start), `audit` (review), `refresh` (after editing policy).
 | `up` / `down` | Start / stop the authorizer (auto-selects Docker or native; `--native` forces native). |
 | `refresh` | Recompile after editing `tenuo.yaml` (restarts authorizer if running). |
 | `verify [--deep]` | Self-test the policy against the authorizer (no Claude session needed). `--deep` adds SSRF/encoded-IP matrix and Bash deny cases. |
-| `audit [--tail N] [--verify]` | Show the decision log (`.state/receipts.jsonl`). `--verify` checks receipt signatures, hash-chain links, and embedded evidence. |
+| `audit [--tail N] [--verify]` | Show the decision log (`<state>/receipts.jsonl`). `--verify` checks receipt signatures, hash-chain links, and embedded evidence. |
 | `check` | Preflight: dependencies, wiring, audit-sink health, leaked keys, Cloud bindings. |
 | `status` | Warrant, mode, audit-sink health, Cloud summary. |
 | `install-authorizer` | Install the pinned native authorizer to `~/.tenuo/bin`. |
+| `state-dir` | Print this project's state directory. |
 | `bench [--json]` | Measure per-call overhead on your machine. |
 | `revoke` | Revoke the current session warrant. |
 
-The warrant is short-lived (~1h TTL); `up` refreshes it before expiry. Generated files (don't commit): `.state/` (keys, warrant, credentials), `.claude/settings.json` (hooks), `.mcp.json` (MCP proxy).
+The warrant is short-lived (~1h TTL); `up` refreshes it before expiry. Generated files (don't commit): `.claude/settings.json` (hooks), `.mcp.json` (MCP proxy).
+
+**State.** Keys, warrant, gateway config, receipts and Cloud credentials live outside the project, in `~/.tenuo/projects/<project>-<hash>/`, so nothing scoped to the project tree can reach them. `tenuo-claude state-dir` prints the path; `<state>/…` in these docs means a file in it. A project set up by an older release keeps using `<project>/.state` until the next `tenuo-claude refresh`, which moves it.
 
 ## Cloud Mode
 
@@ -329,7 +334,7 @@ For organizations: org root, fleet revocation, human approval, central audit.
 1. **Create a Tenuo tenant** at [cloud.tenuo.ai](https://cloud.tenuo.ai). Complete the **Infrastructure** onboarding (provisions KMS-backed signing keys).
 
 2. **Get credentials:**
-   - **Runtime key** (`tenuo_ct_…`) from Agents → Quick Connect → **Authorizer Only** → `.state/cloud.env`
+   - **Runtime key** (`tenuo_ct_…`) from Agents → Quick Connect → **Authorizer Only** → `<state>/cloud.env`
    - **Tenant-admin key** (`tc_…`) from Settings → API Keys → Create (admin role) → `~/.tenuo/admin.env`
 
 3. **Bootstrap with Cloud:**
@@ -390,7 +395,7 @@ When Claude tries a gated action:
 
 **Setup:** See [docs/DETAILS.md § Approval setup runbook](docs/DETAILS.md#approval-setup-runbook).
 
-For Cloud, receipts are sent to your tenant (central audit). Locally, receipts are always written to `.state/receipts.jsonl`.
+For Cloud, receipts are sent to your tenant (central audit). Locally, receipts are always written to `<state>/receipts.jsonl`.
 
 ## Security Model
 
@@ -403,11 +408,11 @@ The warrant is a capability token: it lists what Claude can do and for how long.
 
 **Receipts:** Every decision is signed with Ed25519 and hash-chained for tamper-evidence. Local `audit --verify` checks signatures, hash-chain links, warrant chains, and deterministic constraint replay. Cloud receipts are independently verified by the tenant.
 
-**Fail-closed:** Missing or broken `tenuo.yaml` denies every governed call. Keys under `.state/` are owner-only. A broken receipt sink surfaces loudly (not silent data loss).
+**Fail-closed:** Missing or broken `tenuo.yaml` denies every governed call. Keys are owner-only and kept outside the project. A broken receipt sink surfaces loudly (not silent data loss).
 
 **Rolling out to a team:** Keep `tenuo.yaml` in version control. Push hook/MCP wiring through Claude Code managed settings. Use Cloud for org-root warrants, central audit, and revocation. See [docs/DETAILS.md § Managed deployment](docs/DETAILS.md#managed-deployment) for the rollout checklist and hardened socket setup.
 
-**Turning it off:** `tenuo-claude disable` unwires the hook (Claude stops calling the authorizer) and stops the authorizer, leaving policy and warrant in place. `tenuo-claude uninstall` also deletes `.state/` (warrant, keys, credentials). `tenuo.yaml` is never touched.
+**Turning it off:** `tenuo-claude disable` unwires the hook (Claude stops calling the authorizer) and stops the authorizer, leaving policy and warrant in place. `tenuo-claude uninstall` also deletes the state directory (warrant, keys, credentials). `tenuo.yaml` is never touched.
 
 ---
 
