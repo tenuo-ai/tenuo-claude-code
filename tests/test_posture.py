@@ -164,6 +164,24 @@ def test_load_config_allow_bundled_false_drops_bundled(cli_mod, tmp_path, monkey
     assert cfg["audit"] == ["OnlyThis"]
 
 
+def test_load_config_deny_overrides_bundled_allow(cli_mod, tmp_path, monkeypatch):
+    _write_policy(monkeypatch, tmp_path, "name: t\ndeny:\n  - WebSearch\n")
+    cfg = cli_mod.load_config()
+    assert "WebSearch" not in cfg["audit"]
+    assert "TodoWrite" in cfg["audit"]
+
+
+@pytest.mark.parametrize("body", [
+    "name: t\nallow:\n  - WebSearch\ndeny:\n  - WebSearch\n",
+    "name: t\nenforce:\n  Read: 'subpath:.'\ndeny:\n  - Read\n",
+    "name: t\ndeny: WebSearch\n",
+])
+def test_load_config_deny_conflicts_fail_loud(cli_mod, tmp_path, monkeypatch, body):
+    _write_policy(monkeypatch, tmp_path, body)
+    with pytest.raises(SystemExit, match="deny"):
+        cli_mod.load_config()
+
+
 def test_load_config_legacy_audit_keys_alias_with_deprecation(cli_mod, tmp_path, monkeypatch):
     _write_policy(monkeypatch, tmp_path,
                   "name: t\naudit:\n  - LegacyTool\naudit_extra:\n  - ExtraTool\naudit_bundled: false\n")

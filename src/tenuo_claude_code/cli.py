@@ -963,7 +963,18 @@ def load_config() -> dict:
         merged_src = [t for t in load_harness_tools() if t not in COMMAND_EXEC_TOOLS] + user_allow
     else:
         merged_src = list(user_allow)
-    seen: set[str] = set()
+    # `deny:` names tools that stay denied even when the bundled list would allow
+    # them. Listing a tool as both denied and permitted is a mistake: fail loud.
+    denied = cfg.get("deny") or []
+    if not isinstance(denied, list):
+        raise SystemExit("`deny:` must be a list of tool names.")
+    denied_set = {str(t) for t in denied}
+    clash = sorted(denied_set & ({str(t) for t in user_allow} | set(cfg.get("enforce") or {})))
+    if clash:
+        raise SystemExit(
+            f"{', '.join(clash)}: listed under `deny:` and also under `allow:`/`enforce:`. Keep one."
+        )
+    seen: set[str] = set(denied_set)
     audit: list[str] = []
     for t in merged_src:
         if t not in seen:
