@@ -1,5 +1,5 @@
 name: github-mcp
-version: 3
+version: 4
 title: GitHub MCP
 reviewed: "2026-06-28"
 reviewed_by: tenuo-packs
@@ -9,24 +9,28 @@ description: >
   deletion/fork/high-blast-radius operations.
 pinned:
   name: github-mcp-server
-  version: "0.4.1"
-  tool_list_hash: a1b9f0c
+  version: "2.0.2"
+  tool_list_hash: v2.0.2
 params:
+  - name: owner
+    prompt: Which GitHub account or organization owns the repos?
+    example: myorg
+    required: true
   - name: repos
-    prompt: Which repos may agents touch?
-    example: glob, e.g. myorg/service-*
+    prompt: Which of its repositories may agents touch? (name only, glob allowed)
+    example: service-* or payments-api
     required: true
   - name: approver
     prompt: Who approves merges and pushes?
     example: key id, email, or any-human
     required: true
 summary:
-  tools: 18
-  allowed: 9
+  tools: 20
+  allowed: 12
   gated: 6
-  denied: 3
+  denied: 2
 assumptions:
-  - GitHub MCP tool names match github-mcp-server v0.4.1.
-  - The repo argument is named repo on governed tools.
+  - GitHub MCP tool names match github-mcp-server v2.0.2.
+  - Governed tools take owner and repo (name only) as separate arguments, as in github-mcp-server.
   - Approval gates require Tenuo Cloud; local mode denies gated calls fail-closed.
 

@@ -10,11 +10,13 @@ from tenuo_claude_code import admin, packs
 
 SAMPLE_PARAMS = {
     "filesystem-dev": {
-        "sandbox": "./workspace",
+        "sandbox": ".",
+        "commands": "ls,pwd",
         "web_domain": "api.github.com",
     },
     "github-mcp": {
-        "repos": "myorg/payments-api",
+        "owner": "myorg",
+        "repos": "payments-api",
         "approver": "niki@tenuo.ai",
     },
     "http-api-safe": {
@@ -98,18 +100,20 @@ def test_github_mcp_pack_renders_policy():
 
     text = packs.render_pack(
         pack,
-        {"repos": "myorg/payments-api", "approver": "niki@tenuo.ai"},
+        {"owner": "myorg", "repos": "payments-*", "approver": "niki@tenuo.ai"},
     )
     data = yaml.safe_load(text)
 
     assert data["name"] == "github-agent"
     assert data["mode"] == "dry-run"
     assert data["default"] == "deny"
-    assert data["mcp"]["enforce"]["get_file_contents"]["constraint"] == "pattern:myorg/payments-api"
+    assert data["mcp"]["enforce"]["get_file_contents"]["args"] == {
+        "owner": "exact:myorg", "repo": "pattern:payments-*"}
     merge = data["mcp"]["enforce"]["merge_pull_request"]
-    assert merge["args"]["repo"] == "pattern:myorg/payments-api"
+    assert merge["args"] == {"owner": "exact:myorg", "repo": "pattern:payments-*"}
     assert merge["approval"] == {"threshold": 1, "approver": "niki@tenuo.ai"}
-    assert data["deny"] == ["delete_repository", "delete_branch", "fork_repository"]
+    assert data["deny"] == ["fork_repository", "create_repository"]
+    assert "issue_read" in data["mcp"]["enforce"] and "get_issue" not in data["mcp"]["enforce"]
 
 
 def test_init_pack_writes_policy_and_compiles(monkeypatch, tmp_path, cli_mod, bound):
@@ -124,7 +128,7 @@ def test_init_pack_writes_policy_and_compiles(monkeypatch, tmp_path, cli_mod, bo
 
     cli_mod.cmd_init(argparse.Namespace(
         pack="github-mcp",
-        param=["repos=myorg/payments-api", "approver=niki@tenuo.ai"],
+        param=["owner=myorg", "repos=payments-api", "approver=niki@tenuo.ai"],
         force=False,
         scaffold=False,
         local=False,
@@ -134,8 +138,8 @@ def test_init_pack_writes_policy_and_compiles(monkeypatch, tmp_path, cli_mod, bo
     ))
 
     text = (tmp_path / "tenuo.yaml").read_text()
-    assert "# pack: github-mcp v3" in text
-    assert "pattern:myorg/payments-api" in text
+    assert "# pack: github-mcp v4" in text
+    assert "exact:myorg" in text and "pattern:payments-api" in text
     assert called["cfg"]["mcp"]["enforce"]["merge_pull_request"]["approval"]["approver"] == "niki@tenuo.ai"
 
 
@@ -158,3 +162,113 @@ def test_cloud_warrant_config_keeps_constraints_and_approval_gate(make_cfg):
     }
     assert wc["approval_gates"]["merge_pull_request"] == {"args": None}
     assert wc["approval_gates"]["_policy_id"] == "appr_123"
+
+
+def test_bootstrap_pack_renders_policy_without_prompting(monkeypatch, tmp_path, cli_mod, bound, capsys):
+    """`bootstrap --pack` (the README quickstart) renders the pack with defaults."""
+    _bind_load_config_paths(monkeypatch, cli_mod, tmp_path)
+    steps = []
+    monkeypatch.setattr(cli_mod, "cmd_init", lambda args: steps.append("init"))
+    monkeypatch.setattr(cli_mod, "cmd_up", lambda args: steps.append("up"))
+    monkeypatch.setattr(cli_mod, "cmd_verify", lambda args: steps.append("verify"))
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("bootstrap must not prompt"))
+    monkeypatch.setattr(cli_mod, "_bootstrap_needs_native_install", lambda args: False)
+
+    cli_mod.cmd_bootstrap(argparse.Namespace(pack="filesystem-dev", native=False, install=False))
+
+    assert "# pack: filesystem-dev" in (tmp_path / "tenuo.yaml").read_text()
+    assert steps == ["init", "up", "verify"]
+    out = capsys.readouterr().out
+    assert "decision(s) from you" not in out
+    assert "Using: sandbox=." in out
+
+
+def _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path):
+    steps = []
+    monkeypatch.setattr(cli_mod, "cmd_install_authorizer", lambda args: steps.append("install"))
+    monkeypatch.setattr(cli_mod, "cmd_onboard", lambda args: steps.append("onboard"))
+    monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
+    monkeypatch.delenv("TENUO_AUTHORIZER_BACKEND", raising=False)
+    monkeypatch.delenv("TENUO_AUTHORIZER_NATIVE", raising=False)
+    monkeypatch.setattr(cli_mod, "STATE", tmp_path / ".state", raising=False)
+    monkeypatch.setattr(cli_mod.art, "find_authorizer_binary", lambda *a, **k: None)
+    return steps
+
+
+def test_bootstrap_native_installs_authorizer_first(monkeypatch, cli_mod, tmp_path):
+    """`bootstrap --native` on a clean machine fetches the binary instead of stopping."""
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["install", "onboard"]
+
+
+def test_bootstrap_installs_when_docker_is_unavailable(monkeypatch, cli_mod, tmp_path):
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
+    monkeypatch.setattr(cli_mod.art, "docker_ok", lambda: (False, "Docker not installed"))
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=False, install=False))
+    assert steps == ["install", "onboard"]
+
+
+def test_bootstrap_skips_install_for_docker_or_own_binary(monkeypatch, cli_mod, tmp_path):
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
+    monkeypatch.setattr(cli_mod.art, "docker_ok", lambda: (True, "Docker daemon running"))
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=False, install=False))
+    assert steps == ["onboard"]
+
+    steps.clear()
+    monkeypatch.setenv("TENUO_AUTHORIZER_BIN", "/opt/tenuo-authorizer")
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["onboard"]
+
+
+def test_bootstrap_follows_the_saved_native_backend(monkeypatch, cli_mod, tmp_path):
+    """A project that last ran native still gets its binary when Docker is up."""
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
+    monkeypatch.setattr(cli_mod.art, "docker_ok", lambda: (True, "Docker daemon running"))
+    (tmp_path / ".state").mkdir()
+    (tmp_path / ".state" / "authorizer-backend").write_text("native\n")
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=False, install=False))
+    assert steps == ["install", "onboard"]
+
+
+def test_bootstrap_keeps_a_compatible_binary(monkeypatch, cli_mod, tmp_path):
+    """A compatible authorizer already on PATH means no download; --install still installs."""
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
+    pinned = cli_mod.art.authorizer_crate_version()
+    monkeypatch.setattr(cli_mod.art, "find_authorizer_binary", lambda *a, **k: tmp_path / "tenuo-authorizer")
+    monkeypatch.setattr(cli_mod.art, "query_binary_version", lambda path: pinned)
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["onboard"]
+
+    steps.clear()
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=True))
+    assert steps == ["install", "onboard"]
+
+    steps.clear()
+    monkeypatch.setattr(cli_mod.art, "query_binary_version", lambda path: "0.0.1")
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["install", "onboard"]
+
+
+def test_bootstrap_checks_the_pin_the_project_will_run(monkeypatch, cli_mod, tmp_path):
+    """A binary matching the default pin is not enough when the image is overridden."""
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
+    default_pin = cli_mod.art.authorizer_crate_version()
+    monkeypatch.setattr(cli_mod.art, "find_authorizer_binary", lambda *a, **k: tmp_path / "tenuo-authorizer")
+    monkeypatch.setattr(cli_mod.art, "query_binary_version", lambda path: default_pin)
+    monkeypatch.setenv("TENUO_AUTHORIZER_IMAGE", "tenuo/authorizer:9.9.9")
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["install", "onboard"]
+
+
+def test_install_authorizer_uses_the_env_image_without_a_policy(monkeypatch, cli_mod, tmp_path):
+    """Fresh project + TENUO_AUTHORIZER_IMAGE: install the pin that `up` will check."""
+    seen = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TENUO_PROJECT_DIR", raising=False)
+    monkeypatch.setenv("TENUO_AUTHORIZER_IMAGE", "tenuo/authorizer:9.9.9")
+    monkeypatch.setattr(cli_mod.art, "install_authorizer",
+                        lambda image, force=False: seen.setdefault("image", image) and tmp_path / "bin")
+    monkeypatch.setattr(cli_mod.art, "query_binary_version", lambda path: "9.9.9")
+    cli_mod.cmd_install_authorizer(argparse.Namespace())
+    assert seen["image"] == "tenuo/authorizer:9.9.9"

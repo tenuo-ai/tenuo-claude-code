@@ -1,86 +1,116 @@
 # pack: ${pack_name} ${pack_version}
 # pinned: ${pinned_name} ${pinned_version} (tool-list ${tool_list_hash})
 # reviewed: ${reviewed} by ${reviewed_by}
-# params: repos=${repos}, approver=${approver}
+# params: owner=${owner}, repos=${repos}, approver=${approver}
 name: github-agent
 mode: dry-run          # flip to enforce when the WOULD-DENY log looks right
 default: deny
 
 mcp:
   enforce:
-    # reads: scoped to your repos, nothing else
-    get_file_contents:
-      arg: repo
-      constraint: "pattern:${repos}"
-    search_code:
-      arg: repo
-      constraint: "pattern:${repos}"
-    list_issues:
-      arg: repo
-      constraint: "pattern:${repos}"
-    list_pull_requests:
-      arg: repo
-      constraint: "pattern:${repos}"
-    get_issue:
-      arg: repo
-      constraint: "pattern:${repos}"
-    get_pull_request:
-      arg: repo
-      constraint: "pattern:${repos}"
+    # GitHub MCP tools take the account (owner) and the repository name (repo)
+    # as separate arguments. Both are checked on every governed call.
 
-    # writes: allowed, argument-constrained
-    create_issue:
-      arg: repo
-      constraint: "pattern:${repos}"
+    # reads: your repos only
+    get_file_contents:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+    list_issues:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+    issue_read:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+    list_pull_requests:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+    pull_request_read:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+    list_commits:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+    get_commit:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+    list_branches:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+
+    # writes: allowed, your repos only
+    issue_write:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
     add_issue_comment:
-      arg: repo
-      constraint: "pattern:${repos}"
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+    update_pull_request:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
     create_pull_request:
       args:
+        owner: "exact:${owner}"
         repo: "pattern:${repos}"
         base: "oneof:main,develop"
 
-    # destructive or high-blast-radius: human signature required
+    # high blast radius: a human signs each call
     merge_pull_request:
       args:
+        owner: "exact:${owner}"
         repo: "pattern:${repos}"
       approval:
         threshold: 1
         approver: "${approver}"
     push_files:
       args:
+        owner: "exact:${owner}"
         repo: "pattern:${repos}"
       approval:
         threshold: 1
         approver: "${approver}"
-    update_pull_request_branch:
+    create_or_update_file:
       args:
-        repo: "pattern:${repos}"
-      approval:
-        threshold: 1
-        approver: "${approver}"
-    create_branch:
-      args:
-        repo: "pattern:${repos}"
-      approval:
-        threshold: 1
-        approver: "${approver}"
-    update_file:
-      args:
+        owner: "exact:${owner}"
         repo: "pattern:${repos}"
       approval:
         threshold: 1
         approver: "${approver}"
     delete_file:
       args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+      approval:
+        threshold: 1
+        approver: "${approver}"
+    create_branch:
+      args:
+        owner: "exact:${owner}"
+        repo: "pattern:${repos}"
+      approval:
+        threshold: 1
+        approver: "${approver}"
+    update_pull_request_branch:
+      args:
+        owner: "exact:${owner}"
         repo: "pattern:${repos}"
       approval:
         threshold: 1
         approver: "${approver}"
 
-# never, regardless of arguments (default: deny enforces this; the explicit list
-# keeps the reviewer's intent visible)
+# Everything else is denied by default: search_* (free-text queries can't be
+# scoped to a repo), fork_repository, create_repository and any tool not listed
+# above. The explicit list keeps the reviewer's intent visible.
 deny:
-  - delete_repository
-  - delete_branch
   - fork_repository
+  - create_repository
