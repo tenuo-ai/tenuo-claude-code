@@ -63,13 +63,13 @@ tenuo-claude bootstrap --native --pack filesystem-dev
 claude
 ```
 
-That's it. `bootstrap` with `--pack filesystem-dev` generates a starter policy (read and edit your project, keep Tenuo's keys and hook wiring out of reach, a minimal shell), starts the authorizer, and runs a self-test. Open Claude Code, try something in-scope (it works) and out-of-scope (it's denied). Then:
+That's it. `bootstrap` with `--pack filesystem-dev` generates a starter policy (read and edit your project, keep Tenuo's keys and hook wiring out of reach, a minimal shell), starts the authorizer, and runs a self-test. The first run also downloads the pinned authorizer binary to `~/.tenuo/bin`. The pack starts in `mode: dry-run`, so nothing is blocked yet: open Claude Code, work normally, ask for something out of scope (say, reading a file outside the project), then:
 
 ```bash
 tenuo-claude audit --verify
 ```
 
-to see the signed decision log.
+to see the signed decision log, including what would have been denied.
 
 ### What the quickstart does
 

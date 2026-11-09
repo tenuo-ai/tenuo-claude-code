@@ -3823,14 +3823,23 @@ def cmd_onboard(args) -> None:
     print("\nOnboard complete (cloud). Open Claude Code in this directory.")
 
 
+def _bootstrap_needs_native_install(args) -> bool:
+    """True when bootstrap will start a native authorizer it should provide itself."""
+    if os.environ.get("TENUO_AUTHORIZER_BIN", "").strip():
+        return False  # the user pointed at their own binary
+    return art.choose_backend(args) == "native"
+
+
 def cmd_bootstrap(args) -> None:
     """check → init → up → verify (--local default)."""
     # Handle --native flag by setting environment variable
     if getattr(args, "native", False):
         os.environ["TENUO_AUTHORIZER_BACKEND"] = "native"
 
-    # Handle --install flag
-    if getattr(args, "install", False):
+    # First run: when the authorizer will run natively, fetch the pinned binary
+    # up front (a no-op if a compatible one is already installed) so bootstrap
+    # doesn't stop halfway asking for `install-authorizer`.
+    if getattr(args, "install", False) or _bootstrap_needs_native_install(args):
         cmd_install_authorizer(argparse.Namespace())
 
     local = getattr(args, "local", True) and not getattr(args, "cloud", False)
@@ -4854,9 +4863,16 @@ def render_policy_pack(args) -> None:
     pack = packs.load_pack(args.pack)
     _print_pack_header(pack)
     print()
-    print(f"This pack needs {len(pack.params)} decision(s) from you:")
     supplied = packs.parse_param_overrides(getattr(args, "param", None))
-    params = packs.collect_params(pack, supplied, assume_defaults=getattr(args, "yes", False))
+    assume_defaults = getattr(args, "yes", False)
+    asking = [p for p in pack.params
+              if str(p["name"]) not in supplied and not (assume_defaults and p.get("default"))]
+    if asking:
+        print(f"This pack needs {len(asking)} decision(s) from you:")
+    params = packs.collect_params(pack, supplied, assume_defaults=assume_defaults)
+    if not asking and params:
+        print("Using: " + ", ".join(f"{k}={v}" for k, v in params.items())
+              + "  (change with --param name=value)")
     dest = packs.write_pack_policy(DEMO_DIR, pack, params, force=getattr(args, "force", False))
     print()
     print(f"Wrote {dest.name} (mode: dry-run)")
@@ -5479,7 +5495,8 @@ def main() -> None:
     pb.add_argument("--pack", help="policy pack to use (e.g., filesystem-dev, github-mcp)")
     pb.add_argument("--native", action="store_true",
                     help="use native authorizer backend (skip Docker if available)")
-    pb.add_argument("--install", action="store_true", help="auto-install native authorizer if needed")
+    pb.add_argument("--install", action="store_true",
+                    help="install the native authorizer first (automatic when the backend is native)")
     pb.add_argument("--connect-token")
     pb.add_argument("--admin-key")
     pb.add_argument("--approver")

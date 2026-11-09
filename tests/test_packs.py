@@ -161,7 +161,7 @@ def test_cloud_warrant_config_keeps_constraints_and_approval_gate(make_cfg):
     assert wc["approval_gates"]["_policy_id"] == "appr_123"
 
 
-def test_bootstrap_pack_renders_policy_without_prompting(monkeypatch, tmp_path, cli_mod, bound):
+def test_bootstrap_pack_renders_policy_without_prompting(monkeypatch, tmp_path, cli_mod, bound, capsys):
     """`bootstrap --pack` (the README quickstart) renders the pack with defaults."""
     _bind_load_config_paths(monkeypatch, cli_mod, tmp_path)
     steps = []
@@ -169,8 +169,48 @@ def test_bootstrap_pack_renders_policy_without_prompting(monkeypatch, tmp_path, 
     monkeypatch.setattr(cli_mod, "cmd_up", lambda args: steps.append("up"))
     monkeypatch.setattr(cli_mod, "cmd_verify", lambda args: steps.append("verify"))
     monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("bootstrap must not prompt"))
+    monkeypatch.setattr(cli_mod, "_bootstrap_needs_native_install", lambda args: False)
 
     cli_mod.cmd_bootstrap(argparse.Namespace(pack="filesystem-dev", native=False, install=False))
 
     assert "# pack: filesystem-dev" in (tmp_path / "tenuo.yaml").read_text()
     assert steps == ["init", "up", "verify"]
+    out = capsys.readouterr().out
+    assert "decision(s) from you" not in out
+    assert "Using: sandbox=." in out
+
+
+def _stub_bootstrap_steps(monkeypatch, cli_mod):
+    steps = []
+    monkeypatch.setattr(cli_mod, "cmd_install_authorizer", lambda args: steps.append("install"))
+    monkeypatch.setattr(cli_mod, "cmd_onboard", lambda args: steps.append("onboard"))
+    monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
+    monkeypatch.delenv("TENUO_AUTHORIZER_BACKEND", raising=False)
+    monkeypatch.delenv("TENUO_AUTHORIZER_NATIVE", raising=False)
+    return steps
+
+
+def test_bootstrap_native_installs_authorizer_first(monkeypatch, cli_mod):
+    """`bootstrap --native` on a clean machine fetches the binary instead of stopping."""
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod)
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["install", "onboard"]
+
+
+def test_bootstrap_installs_when_docker_is_unavailable(monkeypatch, cli_mod):
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod)
+    monkeypatch.setattr(cli_mod.art, "docker_ok", lambda: (False, "Docker not installed"))
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=False, install=False))
+    assert steps == ["install", "onboard"]
+
+
+def test_bootstrap_skips_install_for_docker_or_own_binary(monkeypatch, cli_mod):
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod)
+    monkeypatch.setattr(cli_mod.art, "docker_ok", lambda: (True, "Docker daemon running"))
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=False, install=False))
+    assert steps == ["onboard"]
+
+    steps.clear()
+    monkeypatch.setenv("TENUO_AUTHORIZER_BIN", "/opt/tenuo-authorizer")
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["onboard"]
