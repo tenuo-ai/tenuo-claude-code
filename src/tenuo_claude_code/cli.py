@@ -1763,9 +1763,17 @@ def tenuo_file_target(tool: str, tin: dict) -> str | None:
     value = (tin or {}).get(TOOL_DEFAULTS[tool][2])
     if not isinstance(value, str) or not value:
         return None
-    target = os.path.realpath(os.path.abspath(value))
+    # realpath resolves symlinks but keeps the spelling it was given, and the
+    # default macOS and Windows filesystems ignore case: `TENUO.yaml` is the same
+    # file. Compare case-folded, so an alternate spelling is caught whether or not
+    # the file exists yet. (On a case-sensitive filesystem this also refuses a
+    # differently-cased sibling of a protected name, which is fine.)
+    def fold(path: str) -> str:
+        return os.path.realpath(path).casefold()
+
+    target = fold(os.path.abspath(value))
     project = os.path.realpath(DEMO_DIR)
-    state = os.path.realpath(STATE)
+    state = fold(STATE)
     if target == state or target.startswith(state + os.sep):
         return ".state"
     owned = ("tenuo.yaml", "tenuo.cloud.yaml", "tenuo.advanced.yaml", ".mcp.json",
@@ -1773,7 +1781,7 @@ def tenuo_file_target(tool: str, tin: dict) -> str | None:
              # A project-local launcher is what the hooks run when it exists.
              os.path.join("bin", BIN_LAUNCHER))
     for rel in owned:
-        if target == os.path.realpath(os.path.join(project, rel)):
+        if target == fold(os.path.join(project, rel)):
             return rel
     return None
 
@@ -4071,7 +4079,7 @@ def _record_fired_warrant(warrant_b64: str) -> None:
 
 def cmd_install_authorizer(args) -> None:
     """Install the pinned ``tenuo-authorizer`` binary to ``~/.tenuo/bin``."""
-    image = DEFAULT_AUTHZ_IMAGE
+    image = authorizer_image({})   # no policy yet: TENUO_AUTHORIZER_IMAGE or the default
     try:
         bind_project_paths(sys.modules[__name__])
         try:

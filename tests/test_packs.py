@@ -256,3 +256,16 @@ def test_bootstrap_checks_the_pin_the_project_will_run(monkeypatch, cli_mod, tmp
     monkeypatch.setenv("TENUO_AUTHORIZER_IMAGE", "tenuo/authorizer:9.9.9")
     cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
     assert steps == ["install", "onboard"]
+
+
+def test_install_authorizer_uses_the_env_image_without_a_policy(monkeypatch, cli_mod, tmp_path):
+    """Fresh project + TENUO_AUTHORIZER_IMAGE: install the pin that `up` will check."""
+    seen = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TENUO_PROJECT_DIR", raising=False)
+    monkeypatch.setenv("TENUO_AUTHORIZER_IMAGE", "tenuo/authorizer:9.9.9")
+    monkeypatch.setattr(cli_mod.art, "install_authorizer",
+                        lambda image, force=False: seen.setdefault("image", image) and tmp_path / "bin")
+    monkeypatch.setattr(cli_mod.art, "query_binary_version", lambda path: "9.9.9")
+    cli_mod.cmd_install_authorizer(argparse.Namespace())
+    assert seen["image"] == "tenuo/authorizer:9.9.9"
