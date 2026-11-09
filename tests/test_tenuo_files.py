@@ -21,6 +21,8 @@ def project(bound):
     ("Edit", "file_path", ".claude/settings.json", ".claude/settings.json"),
     ("Edit", "file_path", ".claude/settings.local.json", ".claude/settings.local.json"),
     ("Write", "file_path", ".mcp.json", ".mcp.json"),
+    ("Write", "file_path", "bin/tenuo-claude", "bin/tenuo-claude"),
+    ("Edit", "file_path", "bin/other-script", None),
     ("Read", "file_path", "src/app.py", None),
     ("Edit", "file_path", ".claude/agents/reviewer.md", None),
 ])

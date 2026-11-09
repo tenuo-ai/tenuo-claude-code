@@ -404,6 +404,25 @@ def slug(name: str) -> str:
     return name.lower().replace("-", "_")
 
 
+# Entry point for wired commands (hooks, MCP proxy). Claude runs them with the
+# project as cwd, which `-m`/`-c` put first on sys.path; drop it so the import
+# resolves to the installed package (user-site installs included) and never to a
+# file in the project. If the package can't be imported at all, exit 2: a
+# PreToolUse hook that exits 2 blocks the call instead of letting it through.
+_WIRED_ENTRY = (
+    "import os, sys\n"
+    "cwd = os.getcwd()\n"
+    "sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != cwd]\n"
+    "sys.argv[0] = 'tenuo-claude'\n"
+    "try:\n"
+    "    from tenuo_claude_code.cli import main\n"
+    "except Exception as exc:\n"
+    "    sys.stderr.write('Tenuo could not load (fail-closed): %r\\n' % (exc,))\n"
+    "    sys.exit(2)\n"
+    "main()\n"
+)
+
+
 def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
     """Resolve a PATH-independent command for Claude hooks / MCP wiring.
 
@@ -417,7 +436,7 @@ def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
     Priority:
       1. ``TENUO_CLAUDE_BIN`` (operator override, used as-is).
       2. Absolute path to the repo ``bin/tenuo-claude`` when it's executable.
-      3. ``<sys.executable> -I -m tenuo_claude_code.cli`` — the most robust, works
+      3. ``<sys.executable> -c <_WIRED_ENTRY>`` — the most robust, works
          with zero PATH (absolute interpreter + importable module).
       4. Absolute ``shutil.which("tenuo-claude")`` as a last resort.
     """
@@ -427,9 +446,7 @@ def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
     if LAUNCHER.is_file() and os.access(LAUNCHER, os.X_OK):
         return str(LAUNCHER.resolve()), [subcommand]
     if sys.executable:
-        # -I: Claude runs hooks with the project as cwd, which `-m` would put first
-        # on sys.path. Isolated mode keeps the import on the installed package.
-        return sys.executable, ["-I", "-m", "tenuo_claude_code.cli", subcommand]
+        return sys.executable, ["-c", _WIRED_ENTRY, subcommand]
     for name in (CLI_COMMAND, CLI_COMMAND_LEGACY):
         found = shutil.which(name)
         if found:
@@ -1752,7 +1769,9 @@ def tenuo_file_target(tool: str, tin: dict) -> str | None:
     if target == state or target.startswith(state + os.sep):
         return ".state"
     owned = ("tenuo.yaml", "tenuo.cloud.yaml", "tenuo.advanced.yaml", ".mcp.json",
-             os.path.join(".claude", "settings.json"), os.path.join(".claude", "settings.local.json"))
+             os.path.join(".claude", "settings.json"), os.path.join(".claude", "settings.local.json"),
+             # A project-local launcher is what the hooks run when it exists.
+             os.path.join("bin", BIN_LAUNCHER))
     for rel in owned:
         if target == os.path.realpath(os.path.join(project, rel)):
             return rel
@@ -3849,10 +3868,14 @@ def _bootstrap_needs_native_install(args) -> bool:
     if art.choose_backend(args, saved=saved) != "native":
         return False
     # A compatible binary already resolvable (managed dir or PATH) needs no download.
-    found = art.find_authorizer_binary()
+    try:
+        image = authorizer_image(load_config())   # the pin `up` will check against
+    except (SystemExit, Exception):
+        image = authorizer_image({})              # no policy yet: env override or default
+    found = art.find_authorizer_binary(image)
     if found is not None:
         installed = art.query_binary_version(found)
-        if installed and art.version_compatible(installed, art.authorizer_crate_version()):
+        if installed and art.version_compatible(installed, art.authorizer_crate_version(image)):
             return False
     return True
 
