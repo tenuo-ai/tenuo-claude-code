@@ -189,6 +189,7 @@ It does **not** govern:
 
 - Missing or broken `tenuo.yaml` denies every governed call until restored
 - Private keys are owner-only (`0600`) and kept outside the project
+- In enforce mode a recursive `Grep` runs with the policy and hook wiring files (`tenuo.yaml`, `.mcp.json`, `.claude/settings*.json`) excluded, and is denied if they can't be excluded. Keep secrets out of those files anyway (`${VAR}` references), since `dry-run` blocks nothing
 - A broken receipt sink surfaces loudly (not silent data loss)
 - Cloud-disconnected nodes fall back to local policy (no open bypass)
 

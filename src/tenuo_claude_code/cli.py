@@ -1750,6 +1750,15 @@ def explicitly_denied(cfg: dict, tool: str) -> bool:
     return tool in denied or (mcp_tool_name(tool) or tool) in denied
 
 
+# Policy and hook wiring that live in the project. Path tools can't target them, and
+# a recursive Grep has them excluded. (Keys and other state live outside the project.)
+TENUO_OWNED_FILES = (
+    "tenuo.yaml", "tenuo.cloud.yaml", "tenuo.advanced.yaml", ".mcp.json",
+    os.path.join(".claude", "settings.json"), os.path.join(".claude", "settings.local.json"),
+    # A project-local launcher is what the hooks run when it exists.
+    os.path.join("bin", BIN_LAUNCHER),
+)
+
 PATH_TOOLS = frozenset({"Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"})
 
 
@@ -1793,14 +1802,77 @@ def tenuo_file_target(tool: str, tin: dict) -> str | None:
     for folded in state_dirs:
         if target == folded or target.startswith(folded + os.sep):
             return label(folded)
-    owned = ("tenuo.yaml", "tenuo.cloud.yaml", "tenuo.advanced.yaml", ".mcp.json",
-             os.path.join(".claude", "settings.json"), os.path.join(".claude", "settings.local.json"),
-             # A project-local launcher is what the hooks run when it exists.
-             os.path.join("bin", BIN_LAUNCHER))
-    for rel in owned:
+    for rel in TENUO_OWNED_FILES:
         if target == fold(os.path.join(project, rel)):
             return rel
     return None
+
+
+def _on_disk_spellings(base: str, rel: str) -> list[str]:
+    """Existing paths under *base* that *rel* names, in their on-disk spelling.
+
+    ripgrep globs are case-sensitive, so an exclusion must use the name the file
+    really has (`Tenuo.yaml`), not the one we protect it under.
+    """
+    found = [""]
+    for part in rel.split(os.sep):
+        step = []
+        for prefix in found:
+            try:
+                names = os.listdir(os.path.join(base, prefix))
+            except OSError:
+                continue
+            step += [os.path.join(prefix, n) for n in names if n.casefold() == part.casefold()]
+        found = step
+    return found
+
+
+_GLOB_UNSAFE = set("*?[]{}!,\\")
+
+
+def grep_exclusions(tin: dict) -> tuple[list[str], str | None]:
+    """Glob exclusions that keep a recursive Grep off Tenuo's own project files.
+
+    Returns ``(tokens, problem)``. Each token is ``!/<path relative to the search
+    root>``; appended after the caller's own glob, space-separated, they are passed
+    to ripgrep as separate anchored excludes and take precedence (checked against
+    Claude Code's Grep). *problem* is set when the files are in scope but can't be
+    excluded reliably, and the search must be denied instead.
+    """
+    value = (tin or {}).get("path")
+    root = os.path.realpath(os.path.abspath(value if isinstance(value, str) and value else os.getcwd()))
+    if not os.path.isdir(root):
+        return [], None  # a single file: the direct-target check already covers it
+    project = os.path.realpath(DEMO_DIR)
+    tokens: list[str] = []
+    for rel in TENUO_OWNED_FILES:
+        for spelled in _on_disk_spellings(project, rel):
+            below = os.path.relpath(os.path.join(project, spelled), root)
+            if below == os.pardir or below.startswith(os.pardir + os.sep):
+                continue  # not under this search root
+            below = below.replace(os.sep, "/")
+            if any(c in _GLOB_UNSAFE or c.isspace() for c in below):
+                return [], ("the search root includes Tenuo's own files under a path that "
+                            "can't be excluded; search a narrower directory")
+            tokens.append("!/" + below)
+    glob = (tin or {}).get("glob")
+    if tokens and isinstance(glob, str) and glob.strip():
+        depth = 0
+        for ch in glob:
+            depth += (ch == "{") - (ch == "}")
+            if depth < 0 or (depth and ch.isspace()):
+                depth = -1
+                break
+        if depth != 0:
+            return [], "its glob can't be combined with the exclusions for Tenuo's own files; simplify the glob"
+    return sorted(set(tokens)), None
+
+
+def grep_input_with_exclusions(tin: dict, tokens: list[str]) -> dict:
+    """The Grep input to run instead: the caller's glob, then the exclusions (last wins)."""
+    glob = (tin or {}).get("glob")
+    parts = ([glob.strip()] if isinstance(glob, str) and glob.strip() else []) + tokens
+    return {**(tin or {}), "glob": " ".join(parts)}
 
 
 def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
@@ -2271,6 +2343,7 @@ def cmd_hook(_args) -> None:
     # decision (exit 0 + JSON) — verified empirically against claude 2.1.x.
     decision, reason_text = "deny", "Tenuo hook internal error (fail-closed)"
     tool, agent_type, audit_only = "", None, False
+    updated_input = None
     try:
         cfg = load_config()
         apply_transport_env(cfg)
@@ -2290,12 +2363,22 @@ def cmd_hook(_args) -> None:
         allowed, reason, governed, tenuo_tool, authz_evidence = (
             authorize_call(cfg, tool, tin, agent_type, roles, live=not audit_only,
                            return_context=True))
-        wrote = write_receipt(
-            {"phase": "pre", "decision": "allow" if allowed else "deny",
-             "shadow": audit_only, "claude_tool": tool, "tenuo_tool": tenuo_tool,
-             "governed": governed, "agent_type": agent_type, "args": tin,
-             "reason": reason, "authz": authz_evidence}
-        )
+        # An allowed Grep still must not read the policy and wiring files below its
+        # root: run it with those excluded, or deny it when that can't be done.
+        excluded: list[str] = []
+        if allowed and tool == "Grep":
+            excluded, problem = grep_exclusions(tin)
+            if problem:
+                allowed, reason, excluded, authz_evidence = False, problem, [], {}
+            elif excluded:
+                updated_input = grep_input_with_exclusions(tin, excluded)
+        receipt = {"phase": "pre", "decision": "allow" if allowed else "deny",
+                   "shadow": audit_only, "claude_tool": tool, "tenuo_tool": tenuo_tool,
+                   "governed": governed, "agent_type": agent_type, "args": tin,
+                   "reason": reason, "authz": authz_evidence}
+        if excluded:
+            receipt["excluded"] = excluded
+        wrote = write_receipt(receipt)
         kind = "authorized" if governed else "audited"
         scope = f" (subagent:{agent_type})" if agent_type else ""
         decision = "allow" if allowed else "deny"
@@ -2325,9 +2408,11 @@ def cmd_hook(_args) -> None:
         # observe-only would be MORE permissive than having no hook. The receipt
         # above already records what enforcement would have decided (shadow:true).
         return
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse", "permissionDecision": decision,
-        "permissionDecisionReason": reason_text}}))
+    out = {"hookEventName": "PreToolUse", "permissionDecision": decision,
+           "permissionDecisionReason": reason_text}
+    if decision == "allow" and updated_input is not None:
+        out["updatedInput"] = updated_input
+    print(json.dumps({"hookSpecificOutput": out}))
 
 
 def cmd_managed_hook(args) -> None:
