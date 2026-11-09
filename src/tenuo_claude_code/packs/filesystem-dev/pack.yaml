@@ -1,5 +1,5 @@
 name: filesystem-dev
-version: 1
+version: 2
 title: Filesystem Dev
 reviewed: "2026-07-10"
 reviewed_by: tenuo-packs
@@ -12,9 +12,14 @@ pinned:
   tool_list_hash: native
 params:
   - name: sandbox
-    prompt: Which directory may the agent edit?
-    example: ./workspace
-    default: ./workspace
+    prompt: Which directory may the agent read and edit?
+    example: . (this project) or ./src
+    default: .
+    required: true
+  - name: commands
+    prompt: Which shell commands may the agent run?
+    example: ls,pwd,pytest
+    default: ls,pwd
     required: true
   - name: web_domain
     prompt: Which web domain may WebFetch call?
@@ -27,7 +32,8 @@ summary:
   gated: 0
   denied: 3
 assumptions:
-  - Bash is limited to simple read/dev commands; package installs and command chaining are denied.
+  - Bash runs only the listed commands; chaining, pipes and subshells are denied. File access goes through the path-checked tools.
+  - Tenuo's own files (.state, tenuo.yaml, .mcp.json, .claude/settings*.json) are never readable or writable through path tools.
   - Path-scoped tools resolve symlinks before authorization.
   - Add project-specific domains deliberately; WebFetch keeps SSRF hygiene enabled.
 

@@ -57,6 +57,9 @@ from tenuo_claude_code.paths import (
     CLI_COMMAND,
     CLI_COMMAND_LEGACY,
     bind_project_paths,
+    PACKAGE_DIR,
+    home_state_dir,
+    project_state_dir,
     scaffold_example_policy,
 )
 from tenuo_claude_code import packs
@@ -68,6 +71,7 @@ from tenuo_claude_code.verify import ProbeResult, build_probes, format_text, run
 
 DEMO_DIR: Path
 STATE: Path
+LEGACY_STATE: Path
 CONFIG_FILE: Path
 CLOUD_PROFILE: Path
 ADVANCED_PROFILE: Path
@@ -404,6 +408,25 @@ def slug(name: str) -> str:
     return name.lower().replace("-", "_")
 
 
+# Entry point for wired commands (hooks, MCP proxy). Claude runs them with the
+# project as cwd, which `-m`/`-c` put first on sys.path; drop it so the import
+# resolves to the installed package (user-site installs included) and never to a
+# file in the project. If the package can't be imported at all, exit 2: a
+# PreToolUse hook that exits 2 blocks the call instead of letting it through.
+_WIRED_ENTRY = (
+    "import os, sys\n"
+    "cwd = os.getcwd()\n"
+    "sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != cwd]\n"
+    "sys.argv[0] = 'tenuo-claude'\n"
+    "try:\n"
+    "    from tenuo_claude_code.cli import main\n"
+    "except Exception as exc:\n"
+    "    sys.stderr.write('Tenuo could not load (fail-closed): %r\\n' % (exc,))\n"
+    "    sys.exit(2)\n"
+    "main()\n"
+)
+
+
 def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
     """Resolve a PATH-independent command for Claude hooks / MCP wiring.
 
@@ -417,7 +440,7 @@ def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
     Priority:
       1. ``TENUO_CLAUDE_BIN`` (operator override, used as-is).
       2. Absolute path to the repo ``bin/tenuo-claude`` when it's executable.
-      3. ``<sys.executable> -m tenuo_claude_code.cli`` — the most robust, works
+      3. ``<sys.executable> -c <_WIRED_ENTRY>`` — the most robust, works
          with zero PATH (absolute interpreter + importable module).
       4. Absolute ``shutil.which("tenuo-claude")`` as a last resort.
     """
@@ -427,7 +450,7 @@ def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
     if LAUNCHER.is_file() and os.access(LAUNCHER, os.X_OK):
         return str(LAUNCHER.resolve()), [subcommand]
     if sys.executable:
-        return sys.executable, ["-m", "tenuo_claude_code.cli", subcommand]
+        return sys.executable, ["-c", _WIRED_ENTRY, subcommand]
     for name in (CLI_COMMAND, CLI_COMMAND_LEGACY):
         found = shutil.which(name)
         if found:
@@ -963,7 +986,22 @@ def load_config() -> dict:
         merged_src = [t for t in load_harness_tools() if t not in COMMAND_EXEC_TOOLS] + user_allow
     else:
         merged_src = list(user_allow)
-    seen: set[str] = set()
+    # `deny:` names tools that stay denied even when the bundled list would allow
+    # them. Listing a tool as both denied and permitted is a mistake: fail loud.
+    denied = cfg.get("deny") or []
+    if not isinstance(denied, list):
+        raise SystemExit("`deny:` must be a list of tool names.")
+    denied_set = {str(t) for t in denied}
+    permitted = ({str(t) for t in user_allow} | set(cfg.get("enforce") or {})
+                 | set(mcp_enforce_entries(cfg)))
+    clash = sorted(denied_set & permitted)
+    if clash:
+        raise SystemExit(
+            f"{', '.join(clash)}: listed under `deny:` and also under `allow:`, `enforce:` "
+            "or `mcp.enforce:`. Keep one."
+        )
+    cfg["_deny"] = sorted(denied_set)
+    seen: set[str] = set(denied_set)
     audit: list[str] = []
     for t in merged_src:
         if t not in seen:
@@ -1704,6 +1742,149 @@ def resolve_subagent_role(role: str, defs: dict[str, Path] | None = None) -> tup
     return False, "no agent definition"
 
 
+def explicitly_denied(cfg: dict, tool: str) -> bool:
+    """True for a tool the policy lists under `deny:` (by its Claude or bare MCP name).
+
+    Decided before routing, so no fallback posture (`default: approve`) applies.
+    """
+    denied = cfg.get("_deny") or ()
+    return tool in denied or (mcp_tool_name(tool) or tool) in denied
+
+
+# Policy and hook wiring that live in the project. Path tools can't target them, and
+# a recursive Grep has them excluded. (Keys and other state live outside the project.)
+TENUO_OWNED_FILES = (
+    "tenuo.yaml", "tenuo.cloud.yaml", "tenuo.advanced.yaml", ".mcp.json",
+    os.path.join(".claude", "settings.json"), os.path.join(".claude", "settings.local.json"),
+    # A project-local launcher is what the hooks run when it exists.
+    os.path.join("bin", BIN_LAUNCHER),
+)
+
+MUTATING_PATH_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
+PATH_TOOLS = frozenset({"Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"})
+
+
+def tenuo_file_target(tool: str, tin: dict) -> str | None:
+    """The Tenuo-owned project file a path tool would touch, else None.
+
+    `.state` holds the issuer and holder keys, and the policy and Claude hook
+    wiring decide what is enforced. If the agent could read or rewrite them it
+    could mint itself authority or unwire the hook, so path tools never reach
+    them, whatever the sandbox is.
+    """
+    if tool not in PATH_TOOLS:
+        return None
+    value = (tin or {}).get(TOOL_DEFAULTS[tool][2])
+
+    # realpath resolves symlinks but keeps the spelling it was given, and the
+    # default macOS and Windows filesystems ignore case: `TENUO.yaml` is the same
+    # file. Compare case-folded, so an alternate spelling is caught whether or not
+    # the file exists yet. (On a case-sensitive filesystem this also refuses a
+    # differently-cased sibling of a protected name, which is fine.)
+    def fold(path) -> str:
+        return os.path.realpath(path).casefold()
+
+    project = os.path.realpath(DEMO_DIR)
+    in_project = fold(os.path.join(project, ".state"))
+    state_dirs = {fold(STATE): STATE, in_project: os.path.join(project, ".state")}
+
+    def label(folded: str) -> str:
+        return ".state" if folded == in_project else "~/.tenuo state"
+
+    if tool == "Grep":
+        # Grep reads file contents below its root (the cwd when `path` is omitted),
+        # so a root that contains a state directory would read the keys in it.
+        root = fold(os.path.abspath(value if isinstance(value, str) and value else os.getcwd()))
+        for folded, real in state_dirs.items():
+            if os.path.isdir(real) and folded.startswith(root.rstrip(os.sep) + os.sep):
+                return f"{label(folded)} (inside this search root)"
+    if not isinstance(value, str) or not value:
+        return None
+    target = fold(os.path.abspath(value))
+    for folded in state_dirs:
+        if target == folded or target.startswith(folded + os.sep):
+            return label(folded)
+    for rel in TENUO_OWNED_FILES:
+        if target == fold(os.path.join(project, rel)):
+            return rel
+    if tool in MUTATING_PATH_TOOLS:
+        # The hooks import this package and its dependencies on every call. When
+        # they are installed inside the project (a project-local virtualenv), the
+        # project sandbox would otherwise let the agent rewrite them.
+        for runtime in {fold(sys.prefix), fold(PACKAGE_DIR)}:
+            if runtime.startswith(fold(project) + os.sep) and (
+                    target == runtime or target.startswith(runtime + os.sep)):
+                return "the environment Tenuo runs from"
+    return None
+
+
+def _on_disk_spellings(base: str, rel: str) -> list[str]:
+    """Existing paths under *base* that *rel* names, in their on-disk spelling.
+
+    ripgrep globs are case-sensitive, so an exclusion must use the name the file
+    really has (`Tenuo.yaml`), not the one we protect it under.
+    """
+    found = [""]
+    for part in rel.split(os.sep):
+        step = []
+        for prefix in found:
+            try:
+                names = os.listdir(os.path.join(base, prefix))
+            except OSError:
+                continue
+            step += [os.path.join(prefix, n) for n in names if n.casefold() == part.casefold()]
+        found = step
+    return found
+
+
+_GLOB_UNSAFE = set("*?[]{}!,\\")
+
+
+def grep_exclusions(tin: dict) -> tuple[list[str], str | None]:
+    """Glob exclusions that keep a recursive Grep off Tenuo's own project files.
+
+    Returns ``(tokens, problem)``. Each token is ``!/<path relative to the search
+    root>``; appended after the caller's own glob, space-separated, they are passed
+    to ripgrep as separate anchored excludes and take precedence (checked against
+    Claude Code's Grep). *problem* is set when the files are in scope but can't be
+    excluded reliably, and the search must be denied instead.
+    """
+    value = (tin or {}).get("path")
+    root = os.path.realpath(os.path.abspath(value if isinstance(value, str) and value else os.getcwd()))
+    if not os.path.isdir(root):
+        return [], None  # a single file: the direct-target check already covers it
+    project = os.path.realpath(DEMO_DIR)
+    tokens: list[str] = []
+    for rel in TENUO_OWNED_FILES:
+        for spelled in _on_disk_spellings(project, rel):
+            below = os.path.relpath(os.path.join(project, spelled), root)
+            if below == os.pardir or below.startswith(os.pardir + os.sep):
+                continue  # not under this search root
+            below = below.replace(os.sep, "/")
+            if any(c in _GLOB_UNSAFE or c.isspace() for c in below):
+                return [], ("the search root includes Tenuo's own files under a path that "
+                            "can't be excluded; search a narrower directory")
+            tokens.append("!/" + below)
+    glob = (tin or {}).get("glob")
+    if tokens and isinstance(glob, str) and glob.strip():
+        depth = 0
+        for ch in glob:
+            depth += (ch == "{") - (ch == "}")
+            if depth < 0 or (depth and ch.isspace()):
+                depth = -1
+                break
+        if depth != 0:
+            return [], "its glob can't be combined with the exclusions for Tenuo's own files; simplify the glob"
+    return sorted(set(tokens)), None
+
+
+def grep_input_with_exclusions(tin: dict, tokens: list[str]) -> dict:
+    """The Grep input to run instead: the caller's glob, then the exclusions (last wins)."""
+    glob = (tin or {}).get("glob")
+    parts = ([glob.strip()] if isinstance(glob, str) and glob.strip() else []) + tokens
+    return {**(tin or {}), "glob": " ".join(parts)}
+
+
 def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
                    live: bool = False, skip_approval_gate: bool = False,
                    return_context: bool = False):
@@ -1730,6 +1911,14 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
     def done(allowed, reason, governed, tenuo_tool, evidence=None):
         out = (allowed, reason, governed, tenuo_tool)
         return (*out, evidence or {}) if return_context else out
+
+    own = tenuo_file_target(tool, tin)
+    if own:
+        hint = (" (run `tenuo-claude refresh` to move state out of the project)"
+                if own.startswith(".state (inside") else "")
+        return done(False, f"{own} is Tenuo's own file; the agent can't read or change it{hint}", True, tool)
+    if explicitly_denied(cfg, tool):
+        return done(False, "listed under `deny:` in the policy", True, tool)
 
     if tool in SPAWN_TOOLS and not agent_type:
         if not roles:
@@ -2072,7 +2261,7 @@ def receipt_verify_summary_lines(rows: list[dict], ok: bool = True) -> list[str]
     if cloud_root:
         lines.append("  Cloud root present: warrant authority chains to the tenant root.")
     else:
-        lines.append("  Local mode: evidence is tamper-evident relative to local .state keys.")
+        lines.append("  Local mode: evidence is tamper-evident relative to the local state keys.")
         lines.append("  For production evidence, anchor signer/root outside the agent machine or use Cloud.")
     return lines
 
@@ -2164,6 +2353,7 @@ def cmd_hook(_args) -> None:
     # decision (exit 0 + JSON) — verified empirically against claude 2.1.x.
     decision, reason_text = "deny", "Tenuo hook internal error (fail-closed)"
     tool, agent_type, audit_only = "", None, False
+    updated_input = None
     try:
         cfg = load_config()
         apply_transport_env(cfg)
@@ -2183,12 +2373,22 @@ def cmd_hook(_args) -> None:
         allowed, reason, governed, tenuo_tool, authz_evidence = (
             authorize_call(cfg, tool, tin, agent_type, roles, live=not audit_only,
                            return_context=True))
-        wrote = write_receipt(
-            {"phase": "pre", "decision": "allow" if allowed else "deny",
-             "shadow": audit_only, "claude_tool": tool, "tenuo_tool": tenuo_tool,
-             "governed": governed, "agent_type": agent_type, "args": tin,
-             "reason": reason, "authz": authz_evidence}
-        )
+        # An allowed Grep still must not read the policy and wiring files below its
+        # root: run it with those excluded, or deny it when that can't be done.
+        excluded: list[str] = []
+        if allowed and tool == "Grep":
+            excluded, problem = grep_exclusions(tin)
+            if problem:
+                allowed, reason, excluded, authz_evidence = False, problem, [], {}
+            elif excluded:
+                updated_input = grep_input_with_exclusions(tin, excluded)
+        receipt = {"phase": "pre", "decision": "allow" if allowed else "deny",
+                   "shadow": audit_only, "claude_tool": tool, "tenuo_tool": tenuo_tool,
+                   "governed": governed, "agent_type": agent_type, "args": tin,
+                   "reason": reason, "authz": authz_evidence}
+        if excluded:
+            receipt["excluded"] = excluded
+        wrote = write_receipt(receipt)
         kind = "authorized" if governed else "audited"
         scope = f" (subagent:{agent_type})" if agent_type else ""
         decision = "allow" if allowed else "deny"
@@ -2218,9 +2418,11 @@ def cmd_hook(_args) -> None:
         # observe-only would be MORE permissive than having no hook. The receipt
         # above already records what enforcement would have decided (shadow:true).
         return
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse", "permissionDecision": decision,
-        "permissionDecisionReason": reason_text}}))
+    out = {"hookEventName": "PreToolUse", "permissionDecision": decision,
+           "permissionDecisionReason": reason_text}
+    if decision == "allow" and updated_input is not None:
+        out["updatedInput"] = updated_input
+    print(json.dumps({"hookSpecificOutput": out}))
 
 
 def cmd_managed_hook(args) -> None:
@@ -2334,6 +2536,7 @@ def cmd_mcp_proxy(_args) -> None:
                     # receipt in the background until its own timeout — its result is
                     # just discarded.)
                     tin = dict(arguments or {})
+                    follow_moved_state()
                     allowed, reason, _, tenuo_tool, authz_evidence = await asyncio.to_thread(
                         authorize_call, cfg, name, tin, None, roles,
                         live=not audit_only, return_context=True)
@@ -2758,6 +2961,58 @@ def remove_claude_wiring() -> list[str]:
                 mcp_path.unlink()
                 changed.append("removed .mcp.json (no other servers)")
     return changed
+
+
+def state_label(path: Path | None = None) -> str:
+    """State path for messages, with the home directory shortened to ``~``."""
+    target = STATE if path is None else path
+    try:
+        return "~/" + target.relative_to(Path.home()).as_posix()
+    except ValueError:
+        return str(target)
+
+
+def state_in_project() -> bool:
+    """True while state still lives at ``<project>/.state`` (older layout)."""
+    legacy = globals().get("LEGACY_STATE")
+    return legacy is not None and STATE == legacy
+
+
+def migrate_legacy_state() -> bool:
+    """Move ``<project>/.state`` to the per-project directory under ``~/.tenuo``.
+
+    Runs from `init`/`refresh` (never the hook). Keys, warrant and receipts move
+    as they are, so the session and its audit trail carry over. Returns True when
+    a move happened.
+    """
+    import shutil
+
+    if os.environ.get("TENUO_STATE_DIR", "").strip():
+        return False  # an explicitly chosen location stays where it is
+    if not state_in_project() or not STATE.is_dir():
+        return False
+    dest = home_state_dir(DEMO_DIR)
+    if dest.exists():
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(STATE), str(dest))
+    bind_project_paths(sys.modules[__name__], fallback_cwd=True)
+    ensure_state_dir()
+    print(f"Moved Tenuo state out of the project: .state -> {state_label()}")
+    return True
+
+
+def follow_moved_state() -> bool:
+    """Rebind paths when another process moved this project's state.
+
+    A long-lived process (the MCP proxy) binds its paths once. If `refresh` moves
+    state while it runs, the next call picks up the new location instead of
+    reading keys from, and recreating, the old one.
+    """
+    if project_state_dir(DEMO_DIR) == STATE:
+        return False
+    bind_project_paths(sys.modules[__name__], fallback_cwd=True)
+    return True
 
 
 def ensure_state_dir() -> None:
@@ -3298,7 +3553,7 @@ def _start_authorizer_native(cfg: dict, denv: dict, *, image: str, install: bool
 
     def _on_exit() -> None:
         _native_logs(STATE)
-        raise SystemExit("Native authorizer exited during startup (see .state/authorizer.log)")
+        raise SystemExit(f"Native authorizer exited during startup (see {state_label(STATE / 'authorizer.log')})")
 
     art.wait_healthy(
         HEALTH_URL,
@@ -3550,7 +3805,7 @@ def cmd_check(_args) -> None:
         _check_line(None, "policy", note, "edit tenuo.yaml")
     if mode == "local" and any(files.values()):
         _check_line(None, "cloud files", "present but mode is local",
-                    "remove/rename .state/cloud.env or run: tenuo-claude init --local")
+                    f"remove/rename {state_label(CLOUD_ENV)} or run: tenuo-claude init --local")
 
     if mode == "cloud" or files["cloud_env"]:
         if not files["cloud_env"]:
@@ -3708,8 +3963,7 @@ def cmd_onboard(args) -> None:
     if pack_name:
         # Render policy pack instead of scaffold example
         try:
-            from tenuo_claude_code.packs import render_policy_pack
-            render_policy_pack(argparse.Namespace(pack=pack_name))
+            render_policy_pack(argparse.Namespace(pack=pack_name, yes=getattr(args, "yes", False)))
             created = True
         except Exception as e:
             raise SystemExit(f"Policy pack '{pack_name}' failed: {e}")
@@ -3780,14 +4034,37 @@ def cmd_onboard(args) -> None:
     print("\nOnboard complete (cloud). Open Claude Code in this directory.")
 
 
+def _bootstrap_needs_native_install(args) -> bool:
+    """True when bootstrap will start a native authorizer it should provide itself."""
+    if os.environ.get("TENUO_AUTHORIZER_BIN", "").strip():
+        return False  # the user pointed at their own binary
+    saved_path = STATE / "authorizer-backend"   # same choice `up` will make
+    saved = saved_path.read_text().strip() if saved_path.is_file() else None
+    if art.choose_backend(args, saved=saved) != "native":
+        return False
+    # A compatible binary already resolvable (managed dir or PATH) needs no download.
+    try:
+        image = authorizer_image(load_config())   # the pin `up` will check against
+    except (SystemExit, Exception):
+        image = authorizer_image({})              # no policy yet: env override or default
+    found = art.find_authorizer_binary(image)
+    if found is not None:
+        installed = art.query_binary_version(found)
+        if installed and art.version_compatible(installed, art.authorizer_crate_version(image)):
+            return False
+    return True
+
+
 def cmd_bootstrap(args) -> None:
     """check → init → up → verify (--local default)."""
     # Handle --native flag by setting environment variable
     if getattr(args, "native", False):
         os.environ["TENUO_AUTHORIZER_BACKEND"] = "native"
 
-    # Handle --install flag
-    if getattr(args, "install", False):
+    # First run: when the authorizer will run natively, fetch the pinned binary
+    # up front (a no-op if a compatible one is already installed) so bootstrap
+    # doesn't stop halfway asking for `install-authorizer`.
+    if getattr(args, "install", False) or _bootstrap_needs_native_install(args):
         cmd_install_authorizer(argparse.Namespace())
 
     local = getattr(args, "local", True) and not getattr(args, "cloud", False)
@@ -3969,7 +4246,7 @@ def _record_fired_warrant(warrant_b64: str) -> None:
 
 def cmd_install_authorizer(args) -> None:
     """Install the pinned ``tenuo-authorizer`` binary to ``~/.tenuo/bin``."""
-    image = DEFAULT_AUTHZ_IMAGE
+    image = authorizer_image({})   # no policy yet: TENUO_AUTHORIZER_IMAGE or the default
     try:
         bind_project_paths(sys.modules[__name__])
         try:
@@ -4088,11 +4365,14 @@ def cmd_up(_args) -> None:
 
     # Launch the authorizer (Docker container or native binary).
     image = authorizer_image(cfg)
-    backend = art.choose_backend(_args)
+    saved_path = STATE / "authorizer-backend"
+    saved = saved_path.read_text().strip() if saved_path.is_file() else None
+    backend = art.choose_backend(_args, saved=saved)
     if backend == "native":
         _start_authorizer_native(cfg, denv, image=image, install=getattr(_args, "install", False))
     else:
         _start_authorizer_docker(cfg, denv, cloud=cloud)
+    saved_path.write_text(backend + "\n")
     cmd_status(_args)
 
 
@@ -4186,7 +4466,7 @@ def cmd_uninstall(args) -> None:
     if stopped:
         print("  stopped authorizer")
     if keep_state:
-        print("  kept .state (--keep-state)")
+        print(f"  kept {state_label()} (--keep-state)")
     else:
         import shutil as _shutil
         for path in targets:
@@ -4226,6 +4506,9 @@ def cmd_status(_args) -> None:
     cfg = load_config()
     st = json.loads(STATE_JSON.read_text()) if STATE_JSON.exists() else {}
     print(f"policy      : {CONFIG_FILE.name}  (sandbox {cfg['_sandbox_abs']})")
+    print(f"state       : {state_label()}"
+          + ("  !! inside the project — run `tenuo-claude refresh` to move it out"
+             if state_in_project() else ""))
     print(f"warrant     : {st.get('warrant_id', '<none — run init>')}")
     if WARRANT.exists():
         try:
@@ -4808,9 +5091,16 @@ def render_policy_pack(args) -> None:
     pack = packs.load_pack(args.pack)
     _print_pack_header(pack)
     print()
-    print(f"This pack needs {len(pack.params)} decision(s) from you:")
     supplied = packs.parse_param_overrides(getattr(args, "param", None))
-    params = packs.collect_params(pack, supplied, assume_defaults=getattr(args, "yes", False))
+    assume_defaults = getattr(args, "yes", False)
+    asking = [p for p in pack.params
+              if str(p["name"]) not in supplied and not (assume_defaults and p.get("default"))]
+    if asking:
+        print(f"This pack needs {len(asking)} decision(s) from you:")
+    params = packs.collect_params(pack, supplied, assume_defaults=assume_defaults)
+    if not asking and params:
+        print("Using: " + ", ".join(f"{k}={v}" for k, v in params.items())
+              + "  (change with --param name=value)")
     dest = packs.write_pack_policy(DEMO_DIR, pack, params, force=getattr(args, "force", False))
     print()
     print(f"Wrote {dest.name} (mode: dry-run)")
@@ -4823,6 +5113,7 @@ def cmd_init(args) -> None:
     # Scaffolding belongs to the first-run path (`onboard`, or `init --scaffold`).
     # This avoids silently dropping an example policy into a project you're
     # integrating into. `--no-scaffold` is kept as a hidden no-op for back-compat.
+    migrate_legacy_state()
     if getattr(args, "pack", None):
         render_policy_pack(args)
     elif getattr(args, "scaffold", False):
@@ -4853,7 +5144,7 @@ def cmd_init(args) -> None:
             write_advanced_profile(approver=approver, approver_id=approver_id)
             print(f"Advanced profile written: {ADVANCED_PROFILE.name}")
         if not CLOUD_ENV.exists() and CLOUD_ENV_EXAMPLE.exists():
-            print(f"Next: copy {CLOUD_ENV_EXAMPLE.name} → .state/cloud.env and paste Quick Connect token")
+            print(f"Next: copy {CLOUD_ENV_EXAMPLE.name} → {state_label(CLOUD_ENV)} and paste Quick Connect token")
     if (getattr(args, "advanced", False) or getattr(args, "demo", False)) and not getattr(args, "cloud", False):
         approver = getattr(args, "approver", None)
         approver_id = getattr(args, "approver_id", None)
@@ -4867,19 +5158,34 @@ def cmd_init(args) -> None:
     print("Initialized tenuo-claude.")
     print(f"  warrant  : {info['warrant_id']}")
     print(f"  sandbox  : {info['sandbox']}")
-    print(f"  wired    : .claude/settings.json (PreToolUse/PostToolUse), .mcp.json, .state/gateway.yaml")
+    print(f"  wired    : .claude/settings.json (PreToolUse/PostToolUse), .mcp.json")
+    print(f"  state    : {state_label()}  (keys, warrant, gateway, receipts)")
     print("Next: `tenuo-claude up` then use Claude Code in this directory.")
 
 
-def _ensure_state_in_gitignore() -> None:
-    """Add .state/ to .gitignore if not already present, and warn if tracked."""
-    gitignore_path = DEMO_DIR / ".gitignore"
-    state_dir = DEMO_DIR / ".state"
+def state_path_in_project() -> str | None:
+    """State directory relative to the project when it lives inside it, else None.
 
-    # Check if .state/ is already tracked in git
+    True for the older `<project>/.state` layout and for a `TENUO_STATE_DIR` that
+    points into the project.
+    """
+    try:
+        rel = STATE.resolve().relative_to(DEMO_DIR.resolve())
+    except ValueError:
+        return None
+    return rel.as_posix() or None
+
+
+def _ensure_state_in_gitignore() -> None:
+    """Keep an in-project state directory out of git: ignore it, warn if tracked."""
+    rel = state_path_in_project()
+    if rel is None:
+        return  # state lives under ~/.tenuo; nothing in the project to ignore
+    gitignore_path = DEMO_DIR / ".gitignore"
+
     try:
         result = subprocess.run(
-            ["git", "ls-files", ".state/"],
+            ["git", "ls-files", "--", rel + "/"],
             cwd=DEMO_DIR,
             capture_output=True,
             text=True,
@@ -4887,28 +5193,30 @@ def _ensure_state_in_gitignore() -> None:
         )
         if result.returncode == 0 and result.stdout.strip():
             print(
-                f"WARNING: .state/ is tracked in git and contains private keys and credentials.\n"
-                f"  Run: git rm -r --cached .state/\n"
-                f"  Then commit: git commit -m 'Stop tracking .state/ directory'",
+                f"WARNING: {rel}/ is tracked in git and contains private keys and credentials.\n"
+                f"  Run: git rm -r --cached {rel}/\n"
+                f"  Then commit: git commit -m 'Stop tracking Tenuo state'",
                 file=sys.stderr
             )
     except Exception:
         pass  # git not available or in non-git directory
 
-    # Add .state/ to .gitignore if not present
     try:
         gitignore_text = gitignore_path.read_text() if gitignore_path.exists() else ""
-        if ".state/" not in gitignore_text and ".state" not in gitignore_text:
-            # Append .state/ to .gitignore
+        # Whole-line match: a pattern followed by a trailing comment is not a
+        # comment in .gitignore, it is a different pattern that ignores nothing.
+        wanted = {rel, rel + "/", "/" + rel, "/" + rel + "/"}
+        if not any(line.strip() in wanted for line in gitignore_text.splitlines()):
             with gitignore_path.open("a") as f:
                 if gitignore_text and not gitignore_text.endswith("\n"):
                     f.write("\n")
-                f.write(".state/  # Tenuo: private keys, warrants, Cloud credentials\n")
+                f.write("# Tenuo: private keys, warrants, Cloud credentials\n" + rel + "/\n")
     except Exception as e:
         print(f"warning: could not update .gitignore: {e}", file=sys.stderr)
 
 
 def cmd_refresh(args) -> None:
+    migrate_legacy_state()
     cfg = load_config()
     creds = cloud_creds(cfg)
     use_trigger = use_cloud_trigger(cfg)
@@ -4918,7 +5226,7 @@ def cmd_refresh(args) -> None:
     managed = managed_mode(cfg)
     print("Refreshed local overlay and wiring:" if managed else "Refreshed from tenuo.yaml:")
     print(f"  warrant  : {wid}")
-    print(f"  gateway  : .state/{GATEWAY.name}")
+    print(f"  gateway  : {state_label(GATEWAY)}")
     print(f"  wiring   : .claude/settings.json, .mcp.json")
     print(f"  posture  : {'dry-run (observe-only)' if is_audit_mode(cfg) else 'enforce'}")
     for w in posture_warnings(cfg):
@@ -5325,7 +5633,13 @@ def cmd_managed_template(args) -> None:
 # Dispatch
 # ---------------------------------------------------------------------------
 
+def cmd_state_dir(_args) -> None:
+    """Print this project's state directory (for scripts and Cloud credential setup)."""
+    print(STATE)
+
+
 COMMANDS = {
+    "state-dir": cmd_state_dir,
     "init": cmd_init, "refresh": cmd_refresh, "up": cmd_up, "down": cmd_down, "status": cmd_status,
     "disable": cmd_disable, "uninstall": cmd_uninstall,
     "check": cmd_check, "onboard": cmd_onboard, "bootstrap": cmd_bootstrap,
@@ -5352,10 +5666,10 @@ def main() -> None:
     sub.add_parser("disable",
                    help="turn governance off (unwire hooks + stop authorizer; keeps policy/state)")
     pun = sub.add_parser("uninstall",
-                         help="full teardown: unwire hooks, stop authorizer, delete .state")
+                         help="full teardown: unwire hooks, stop authorizer, delete the state directory")
     pun.add_argument("--yes", "-y", action="store_true", help="skip the confirmation prompt")
     pun.add_argument("--keep-state", action="store_true",
-                     help="keep .state (warrant, keys, gateway, receipts); only unwire + stop")
+                     help="keep the state directory (warrant, keys, gateway, receipts); only unwire + stop")
     pu = sub.add_parser("up", help="start the authorizer (Docker or native binary)")
     pu.add_argument("--native", action="store_true",
                     help="run tenuo-authorizer as a host process (no Docker)")
@@ -5433,7 +5747,8 @@ def main() -> None:
     pb.add_argument("--pack", help="policy pack to use (e.g., filesystem-dev, github-mcp)")
     pb.add_argument("--native", action="store_true",
                     help="use native authorizer backend (skip Docker if available)")
-    pb.add_argument("--install", action="store_true", help="auto-install native authorizer if needed")
+    pb.add_argument("--install", action="store_true",
+                    help="install the native authorizer first (automatic when the backend is native)")
     pb.add_argument("--connect-token")
     pb.add_argument("--admin-key")
     pb.add_argument("--approver")
@@ -5462,6 +5777,7 @@ def main() -> None:
     pbench.add_argument("--no-hook", action="store_true",
                         help="skip subprocess _hook benchmark (faster)")
     pbench.add_argument("--json", action="store_true", help="machine-readable output")
+    sub.add_parser("state-dir", help="print where this project's keys, warrant and receipts live")
     pa = sub.add_parser("audit")
     pa.add_argument("--tail", type=int, default=None)
     pa.add_argument("--verify", action="store_true",
@@ -5474,7 +5790,8 @@ def main() -> None:
     if args.cmd != "install-authorizer":
         bind_project_paths(
             sys.modules[__name__],
-            fallback_cwd=args.cmd in ("init", "onboard", "bootstrap", "disable", "uninstall", "pack"),
+            fallback_cwd=args.cmd in ("init", "onboard", "bootstrap", "disable", "uninstall", "pack",
+                                      "state-dir"),
         )
     # Separation of duties: the runtime/agent plane must never carry an admin
     # credential. Admin actions live in `tenuo-admin`. Skip the internal hook

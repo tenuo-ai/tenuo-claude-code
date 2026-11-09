@@ -107,7 +107,7 @@ Session warrants have a ~1h TTL; `status` flags `EXPIRED` when one lapses. `tenu
 - **Allowed** tools (the `allow:` permit-list and bundled harness tools): permitted unconstrained, logged, not blocked.
 - **Default**: everything else denied (`default: deny`), or routed to a Cloud human-approval gate (`default: approve`).
 
-The hook appends a signed local JSON line per call to `.state/receipts.jsonl`.
+The hook appends a signed local JSON line per call to `<state>/receipts.jsonl`.
 `tenuo-claude audit` pretty-prints it; `tenuo-claude audit --verify` checks the
 receipt signature, hash-chain link, warrant chain, and recorded authorization
 evidence. For Cloud-approved calls, the local receipt stores the approval CBOR
@@ -130,7 +130,7 @@ Hooks are wired to a PATH-independent launcher. In PyPI installs this is usually
 silently allowing the tool call.
 
 The MCP proxy uses the same launcher resolution, without the PreToolUse deny
-guard. Project files (`tenuo.yaml`, `.state/`) live in your governed project
+guard. The policy (`tenuo.yaml`) lives in your governed project and its state under `~/.tenuo/projects/`
 directory, not the package install path. Discovery: `tenuo.yaml` in the cwd or
 any parent, or set `TENUO_PROJECT_DIR`.
 
@@ -138,7 +138,7 @@ any parent, or set `TENUO_PROJECT_DIR`.
 
 `check` validates Python deps, the authorizer runtime, and hook/MCP wiring, and when Cloud artifacts exist and a tenant-admin key is in `~/.tenuo/admin.env`, the live control-plane **bindings**:
 
-- local holder public key (`.state/holder_key.b64`) vs the Cloud agent's claimed key,
+- local holder public key (`<state>/holder_key.b64`) vs the Cloud agent's claimed key,
 - the agent's `allowed_triggers` vs the configured trigger id,
 - a runtime-key **dry-run trigger fire** (`would_issue=true`).
 
