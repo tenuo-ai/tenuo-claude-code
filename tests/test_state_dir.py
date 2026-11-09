@@ -140,3 +140,39 @@ def test_long_lived_process_follows_a_moved_state(real_binding):
     assert cli.STATE == legacy               # this process still holds the old binding
     assert cli.follow_moved_state() is True
     assert cli.STATE == home and cli.WARRANT == home / "warrant.b64"
+
+
+def test_in_project_override_is_gitignored_with_a_working_line(real_binding, monkeypatch):
+    monkeypatch.setenv("TENUO_STATE_DIR", str(real_binding / "private-state"))
+    paths.bind_project_paths(cli)
+    assert cli.state_path_in_project() == "private-state"
+    # A line the old code wrote: pattern plus trailing text, which ignores nothing.
+    (real_binding / ".gitignore").write_text("private-state/  # Tenuo: private keys\n")
+
+    cli._ensure_state_in_gitignore()
+    cli._ensure_state_in_gitignore()
+
+    lines = (real_binding / ".gitignore").read_text().splitlines()
+    assert lines.count("private-state/") == 1
+    assert lines[-2].startswith("#")
+
+
+def test_installed_runtime_inside_the_project_is_write_protected(real_binding, monkeypatch):
+    paths.bind_project_paths(cli)
+    venv = real_binding / ".venv"
+    pkg = venv / "lib" / "site-packages" / "tenuo_claude_code"
+    pkg.mkdir(parents=True)
+    monkeypatch.setattr(cli.sys, "prefix", str(venv))
+    monkeypatch.setattr(cli, "PACKAGE_DIR", pkg)
+    label = "the environment Tenuo runs from"
+    assert cli.tenuo_file_target("Write", {"file_path": str(pkg / "cli.py")}) == label
+    assert cli.tenuo_file_target("Edit", {"file_path": str(venv / "lib" / "site-packages" / "yaml.py")}) == label
+    assert cli.tenuo_file_target("Read", {"file_path": str(pkg / "cli.py")}) is None
+    assert cli.tenuo_file_target("Write", {"file_path": str(real_binding / "src.py")}) is None
+
+
+def test_runtime_outside_the_project_is_not_special(real_binding, monkeypatch, tmp_path):
+    paths.bind_project_paths(cli)
+    monkeypatch.setattr(cli.sys, "prefix", str(tmp_path / "tool-venv"))
+    monkeypatch.setattr(cli, "PACKAGE_DIR", tmp_path / "tool-venv" / "pkg")
+    assert cli.tenuo_file_target("Write", {"file_path": str(real_binding / "a.py")}) is None

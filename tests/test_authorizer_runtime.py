@@ -217,3 +217,11 @@ def test_ssl_context_uses_certifi(monkeypatch):
     monkeypatch.setattr(art.ssl, "create_default_context", fake_create_default_context)
     art._ssl_context()
     assert seen.get("cafile") == certifi.where()
+
+
+def test_choose_backend_env_docker_beats_saved_native(monkeypatch):
+    monkeypatch.setenv("TENUO_AUTHORIZER_BACKEND", "docker")
+    monkeypatch.delenv("TENUO_AUTHORIZER_NATIVE", raising=False)
+    args = argparse.Namespace(native=False, docker=False)
+    assert art.choose_backend(args, saved="native") == "docker"
+    assert art.choose_backend(argparse.Namespace(native=True, docker=False), saved="native") == "native"

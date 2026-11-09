@@ -369,6 +369,8 @@ def choose_backend(args, *, force_native: bool = False, saved: str | None = None
     env = os.environ.get("TENUO_AUTHORIZER_BACKEND", "").strip().lower()
     if env in ("native", "process"):
         return "native"
+    if env in ("docker", "container"):
+        return "docker"
     if os.environ.get("TENUO_AUTHORIZER_NATIVE", "").strip().lower() in ("1", "true", "yes"):
         return "native"
     if saved in ("native", "docker"):

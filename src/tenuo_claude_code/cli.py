@@ -57,6 +57,7 @@ from tenuo_claude_code.paths import (
     CLI_COMMAND,
     CLI_COMMAND_LEGACY,
     bind_project_paths,
+    PACKAGE_DIR,
     home_state_dir,
     project_state_dir,
     scaffold_example_policy,
@@ -1759,6 +1760,7 @@ TENUO_OWNED_FILES = (
     os.path.join("bin", BIN_LAUNCHER),
 )
 
+MUTATING_PATH_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 PATH_TOOLS = frozenset({"Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"})
 
 
@@ -1805,6 +1807,14 @@ def tenuo_file_target(tool: str, tin: dict) -> str | None:
     for rel in TENUO_OWNED_FILES:
         if target == fold(os.path.join(project, rel)):
             return rel
+    if tool in MUTATING_PATH_TOOLS:
+        # The hooks import this package and its dependencies on every call. When
+        # they are installed inside the project (a project-local virtualenv), the
+        # project sandbox would otherwise let the agent rewrite them.
+        for runtime in {fold(sys.prefix), fold(PACKAGE_DIR)}:
+            if runtime.startswith(fold(project) + os.sep) and (
+                    target == runtime or target.startswith(runtime + os.sep)):
+                return "the environment Tenuo runs from"
     return None
 
 
@@ -5153,17 +5163,29 @@ def cmd_init(args) -> None:
     print("Next: `tenuo-claude up` then use Claude Code in this directory.")
 
 
+def state_path_in_project() -> str | None:
+    """State directory relative to the project when it lives inside it, else None.
+
+    True for the older `<project>/.state` layout and for a `TENUO_STATE_DIR` that
+    points into the project.
+    """
+    try:
+        rel = STATE.resolve().relative_to(DEMO_DIR.resolve())
+    except ValueError:
+        return None
+    return rel.as_posix() or None
+
+
 def _ensure_state_in_gitignore() -> None:
-    """Add .state/ to .gitignore if not already present, and warn if tracked."""
-    if not state_in_project():
+    """Keep an in-project state directory out of git: ignore it, warn if tracked."""
+    rel = state_path_in_project()
+    if rel is None:
         return  # state lives under ~/.tenuo; nothing in the project to ignore
     gitignore_path = DEMO_DIR / ".gitignore"
-    state_dir = DEMO_DIR / ".state"
 
-    # Check if .state/ is already tracked in git
     try:
         result = subprocess.run(
-            ["git", "ls-files", ".state/"],
+            ["git", "ls-files", "--", rel + "/"],
             cwd=DEMO_DIR,
             capture_output=True,
             text=True,
@@ -5171,23 +5193,24 @@ def _ensure_state_in_gitignore() -> None:
         )
         if result.returncode == 0 and result.stdout.strip():
             print(
-                f"WARNING: .state/ is tracked in git and contains private keys and credentials.\n"
-                f"  Run: git rm -r --cached .state/\n"
-                f"  Then commit: git commit -m 'Stop tracking .state/ directory'",
+                f"WARNING: {rel}/ is tracked in git and contains private keys and credentials.\n"
+                f"  Run: git rm -r --cached {rel}/\n"
+                f"  Then commit: git commit -m 'Stop tracking Tenuo state'",
                 file=sys.stderr
             )
     except Exception:
         pass  # git not available or in non-git directory
 
-    # Add .state/ to .gitignore if not present
     try:
         gitignore_text = gitignore_path.read_text() if gitignore_path.exists() else ""
-        if ".state/" not in gitignore_text and ".state" not in gitignore_text:
-            # Append .state/ to .gitignore
+        # Whole-line match: a pattern followed by a trailing comment is not a
+        # comment in .gitignore, it is a different pattern that ignores nothing.
+        wanted = {rel, rel + "/", "/" + rel, "/" + rel + "/"}
+        if not any(line.strip() in wanted for line in gitignore_text.splitlines()):
             with gitignore_path.open("a") as f:
                 if gitignore_text and not gitignore_text.endswith("\n"):
                     f.write("\n")
-                f.write(".state/  # Tenuo: private keys, warrants, Cloud credentials\n")
+                f.write("# Tenuo: private keys, warrants, Cloud credentials\n" + rel + "/\n")
     except Exception as e:
         print(f"warning: could not update .gitignore: {e}", file=sys.stderr)
 
@@ -5767,7 +5790,8 @@ def main() -> None:
     if args.cmd != "install-authorizer":
         bind_project_paths(
             sys.modules[__name__],
-            fallback_cwd=args.cmd in ("init", "onboard", "bootstrap", "disable", "uninstall", "pack"),
+            fallback_cwd=args.cmd in ("init", "onboard", "bootstrap", "disable", "uninstall", "pack",
+                                      "state-dir"),
         )
     # Separation of duties: the runtime/agent plane must never carry an admin
     # credential. Admin actions live in `tenuo-admin`. Skip the internal hook
