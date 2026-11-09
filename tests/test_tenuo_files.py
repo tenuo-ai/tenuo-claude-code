@@ -45,3 +45,15 @@ def test_authorize_call_denies_before_the_authorizer(cli_mod, project, make_cfg,
         make_cfg(), "Read", {"file_path": str(project / ".state" / "issuer_key.b64")}, None, {})
     assert (allowed, governed, tool) == (False, True, "Read")
     assert reason.startswith(".state is Tenuo's own file")
+
+
+@pytest.mark.parametrize("tool", ["WebSearch", "mcp__github__delete_repository", "delete_repository"])
+def test_explicit_deny_is_final_under_default_approve(cli_mod, project, make_cfg, monkeypatch, tool):
+    """`deny:` is decided before routing, so the approval catch-all never sees it."""
+    monkeypatch.setattr(cli_mod, "authorize", lambda *a, **k: pytest.fail("must not reach the authorizer"))
+    cfg = make_cfg()
+    cfg["default"] = "approve"
+    cfg["_deny"] = ["WebSearch", "delete_repository"]
+    allowed, reason, governed, name = cli_mod.authorize_call(cfg, tool, {"query": "x"}, None, {})
+    assert (allowed, governed, name) == (False, True, tool)
+    assert "deny:" in reason

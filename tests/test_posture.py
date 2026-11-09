@@ -175,6 +175,7 @@ def test_load_config_deny_overrides_bundled_allow(cli_mod, tmp_path, monkeypatch
     "name: t\nallow:\n  - WebSearch\ndeny:\n  - WebSearch\n",
     "name: t\nenforce:\n  Read: 'subpath:.'\ndeny:\n  - Read\n",
     "name: t\ndeny: WebSearch\n",
+    "name: t\nmcp:\n  enforce:\n    delete_repository: 'exact:x'\ndeny:\n  - delete_repository\n",
 ])
 def test_load_config_deny_conflicts_fail_loud(cli_mod, tmp_path, monkeypatch, body):
     _write_policy(monkeypatch, tmp_path, body)

@@ -329,7 +329,7 @@ def test_wiring_command_is_absolute_and_path_independent(monkeypatch, tmp_path):
     assert os.path.isabs(cmd), f"wired command must be absolute, got {cmd!r}"
     assert cmd != cli.CLI_COMMAND, "must not emit bare `tenuo-claude`"
     assert cmd == sys.executable
-    assert args == ["-m", "tenuo_claude_code.cli", "_hook"]
+    assert args == ["-I", "-m", "tenuo_claude_code.cli", "_hook"]
 
 
 def test_wiring_command_prefers_executable_launcher(monkeypatch, tmp_path):

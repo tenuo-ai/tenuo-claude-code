@@ -180,32 +180,34 @@ def test_bootstrap_pack_renders_policy_without_prompting(monkeypatch, tmp_path, 
     assert "Using: sandbox=." in out
 
 
-def _stub_bootstrap_steps(monkeypatch, cli_mod):
+def _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path):
     steps = []
     monkeypatch.setattr(cli_mod, "cmd_install_authorizer", lambda args: steps.append("install"))
     monkeypatch.setattr(cli_mod, "cmd_onboard", lambda args: steps.append("onboard"))
     monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
     monkeypatch.delenv("TENUO_AUTHORIZER_BACKEND", raising=False)
     monkeypatch.delenv("TENUO_AUTHORIZER_NATIVE", raising=False)
+    monkeypatch.setattr(cli_mod, "STATE", tmp_path / ".state", raising=False)
+    monkeypatch.setattr(cli_mod.art, "find_authorizer_binary", lambda *a, **k: None)
     return steps
 
 
-def test_bootstrap_native_installs_authorizer_first(monkeypatch, cli_mod):
+def test_bootstrap_native_installs_authorizer_first(monkeypatch, cli_mod, tmp_path):
     """`bootstrap --native` on a clean machine fetches the binary instead of stopping."""
-    steps = _stub_bootstrap_steps(monkeypatch, cli_mod)
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
     cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
     assert steps == ["install", "onboard"]
 
 
-def test_bootstrap_installs_when_docker_is_unavailable(monkeypatch, cli_mod):
-    steps = _stub_bootstrap_steps(monkeypatch, cli_mod)
+def test_bootstrap_installs_when_docker_is_unavailable(monkeypatch, cli_mod, tmp_path):
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
     monkeypatch.setattr(cli_mod.art, "docker_ok", lambda: (False, "Docker not installed"))
     cli_mod.cmd_bootstrap(argparse.Namespace(native=False, install=False))
     assert steps == ["install", "onboard"]
 
 
-def test_bootstrap_skips_install_for_docker_or_own_binary(monkeypatch, cli_mod):
-    steps = _stub_bootstrap_steps(monkeypatch, cli_mod)
+def test_bootstrap_skips_install_for_docker_or_own_binary(monkeypatch, cli_mod, tmp_path):
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
     monkeypatch.setattr(cli_mod.art, "docker_ok", lambda: (True, "Docker daemon running"))
     cli_mod.cmd_bootstrap(argparse.Namespace(native=False, install=False))
     assert steps == ["onboard"]
@@ -214,3 +216,32 @@ def test_bootstrap_skips_install_for_docker_or_own_binary(monkeypatch, cli_mod):
     monkeypatch.setenv("TENUO_AUTHORIZER_BIN", "/opt/tenuo-authorizer")
     cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
     assert steps == ["onboard"]
+
+
+def test_bootstrap_follows_the_saved_native_backend(monkeypatch, cli_mod, tmp_path):
+    """A project that last ran native still gets its binary when Docker is up."""
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
+    monkeypatch.setattr(cli_mod.art, "docker_ok", lambda: (True, "Docker daemon running"))
+    (tmp_path / ".state").mkdir()
+    (tmp_path / ".state" / "authorizer-backend").write_text("native\n")
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=False, install=False))
+    assert steps == ["install", "onboard"]
+
+
+def test_bootstrap_keeps_a_compatible_binary(monkeypatch, cli_mod, tmp_path):
+    """A compatible authorizer already on PATH means no download; --install still installs."""
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
+    pinned = cli_mod.art.authorizer_crate_version()
+    monkeypatch.setattr(cli_mod.art, "find_authorizer_binary", lambda *a, **k: tmp_path / "tenuo-authorizer")
+    monkeypatch.setattr(cli_mod.art, "query_binary_version", lambda path: pinned)
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["onboard"]
+
+    steps.clear()
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=True))
+    assert steps == ["install", "onboard"]
+
+    steps.clear()
+    monkeypatch.setattr(cli_mod.art, "query_binary_version", lambda path: "0.0.1")
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["install", "onboard"]

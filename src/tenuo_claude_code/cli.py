@@ -417,7 +417,7 @@ def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
     Priority:
       1. ``TENUO_CLAUDE_BIN`` (operator override, used as-is).
       2. Absolute path to the repo ``bin/tenuo-claude`` when it's executable.
-      3. ``<sys.executable> -m tenuo_claude_code.cli`` — the most robust, works
+      3. ``<sys.executable> -I -m tenuo_claude_code.cli`` — the most robust, works
          with zero PATH (absolute interpreter + importable module).
       4. Absolute ``shutil.which("tenuo-claude")`` as a last resort.
     """
@@ -427,7 +427,9 @@ def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
     if LAUNCHER.is_file() and os.access(LAUNCHER, os.X_OK):
         return str(LAUNCHER.resolve()), [subcommand]
     if sys.executable:
-        return sys.executable, ["-m", "tenuo_claude_code.cli", subcommand]
+        # -I: Claude runs hooks with the project as cwd, which `-m` would put first
+        # on sys.path. Isolated mode keeps the import on the installed package.
+        return sys.executable, ["-I", "-m", "tenuo_claude_code.cli", subcommand]
     for name in (CLI_COMMAND, CLI_COMMAND_LEGACY):
         found = shutil.which(name)
         if found:
@@ -969,11 +971,15 @@ def load_config() -> dict:
     if not isinstance(denied, list):
         raise SystemExit("`deny:` must be a list of tool names.")
     denied_set = {str(t) for t in denied}
-    clash = sorted(denied_set & ({str(t) for t in user_allow} | set(cfg.get("enforce") or {})))
+    permitted = ({str(t) for t in user_allow} | set(cfg.get("enforce") or {})
+                 | set(mcp_enforce_entries(cfg)))
+    clash = sorted(denied_set & permitted)
     if clash:
         raise SystemExit(
-            f"{', '.join(clash)}: listed under `deny:` and also under `allow:`/`enforce:`. Keep one."
+            f"{', '.join(clash)}: listed under `deny:` and also under `allow:`, `enforce:` "
+            "or `mcp.enforce:`. Keep one."
         )
+    cfg["_deny"] = sorted(denied_set)
     seen: set[str] = set(denied_set)
     audit: list[str] = []
     for t in merged_src:
@@ -1715,6 +1721,15 @@ def resolve_subagent_role(role: str, defs: dict[str, Path] | None = None) -> tup
     return False, "no agent definition"
 
 
+def explicitly_denied(cfg: dict, tool: str) -> bool:
+    """True for a tool the policy lists under `deny:` (by its Claude or bare MCP name).
+
+    Decided before routing, so no fallback posture (`default: approve`) applies.
+    """
+    denied = cfg.get("_deny") or ()
+    return tool in denied or (mcp_tool_name(tool) or tool) in denied
+
+
 PATH_TOOLS = frozenset({"Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"})
 
 
@@ -1774,6 +1789,8 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
     own = tenuo_file_target(tool, tin)
     if own:
         return done(False, f"{own} is Tenuo's own file; the agent can't read or change it", True, tool)
+    if explicitly_denied(cfg, tool):
+        return done(False, "listed under `deny:` in the policy", True, tool)
 
     if tool in SPAWN_TOOLS and not agent_type:
         if not roles:
@@ -3827,7 +3844,17 @@ def _bootstrap_needs_native_install(args) -> bool:
     """True when bootstrap will start a native authorizer it should provide itself."""
     if os.environ.get("TENUO_AUTHORIZER_BIN", "").strip():
         return False  # the user pointed at their own binary
-    return art.choose_backend(args) == "native"
+    saved_path = STATE / "authorizer-backend"   # same choice `up` will make
+    saved = saved_path.read_text().strip() if saved_path.is_file() else None
+    if art.choose_backend(args, saved=saved) != "native":
+        return False
+    # A compatible binary already resolvable (managed dir or PATH) needs no download.
+    found = art.find_authorizer_binary()
+    if found is not None:
+        installed = art.query_binary_version(found)
+        if installed and art.version_compatible(installed, art.authorizer_crate_version()):
+            return False
+    return True
 
 
 def cmd_bootstrap(args) -> None:
