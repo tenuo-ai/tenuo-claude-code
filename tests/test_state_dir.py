@@ -85,3 +85,58 @@ def test_gitignore_untouched_when_state_is_outside(real_binding):
     paths.bind_project_paths(cli)
     cli._ensure_state_in_gitignore()
     assert not (real_binding / ".gitignore").exists()
+
+
+def test_explicit_override_is_never_migrated(real_binding, monkeypatch):
+    legacy = real_binding / ".state"
+    legacy.mkdir()
+    (legacy / "state.json").write_text("{}")
+    (legacy / "issuer_key.b64").write_text("secret")
+    monkeypatch.setenv("TENUO_STATE_DIR", str(legacy))
+    paths.bind_project_paths(cli)
+
+    assert cli.migrate_legacy_state() is False
+    assert (legacy / "issuer_key.b64").read_text() == "secret"
+    assert not paths.home_state_dir(real_binding).exists()
+
+
+def test_grep_root_containing_state_is_denied(real_binding, monkeypatch, tmp_path):
+    """Legacy layout or an in-project override: a search over the project would read keys."""
+    legacy = real_binding / ".state"
+    legacy.mkdir()
+    (legacy / "state.json").write_text("{}")
+    (real_binding / "src").mkdir()
+    paths.bind_project_paths(cli)
+    monkeypatch.chdir(real_binding)
+
+    assert cli.tenuo_file_target("Grep", {"pattern": "x"}) == ".state (inside this search root)"
+    assert cli.tenuo_file_target("Grep", {"pattern": "x", "path": str(real_binding)}) \
+        == ".state (inside this search root)"
+    assert cli.tenuo_file_target("Grep", {"pattern": "x", "path": str(tmp_path)}) is not None
+    assert cli.tenuo_file_target("Grep", {"pattern": "x", "path": str(real_binding / "src")}) is None
+    assert cli.tenuo_file_target("Glob", {"pattern": "*"}) is None
+
+
+def test_grep_over_the_project_is_fine_once_state_is_outside(real_binding, monkeypatch):
+    paths.bind_project_paths(cli)
+    cli.STATE.mkdir(parents=True)
+    monkeypatch.chdir(real_binding)
+    assert cli.tenuo_file_target("Grep", {"pattern": "x"}) is None
+    assert cli.tenuo_file_target("Grep", {"pattern": "x", "path": str(real_binding)}) is None
+    assert cli.tenuo_file_target("Grep", {"pattern": "x", "path": str(Path.home())}) \
+        == "~/.tenuo state (inside this search root)"
+
+
+def test_long_lived_process_follows_a_moved_state(real_binding):
+    legacy = real_binding / ".state"
+    legacy.mkdir()
+    (legacy / "state.json").write_text("{}")
+    paths.bind_project_paths(cli)
+    assert cli.follow_moved_state() is False
+
+    home = paths.home_state_dir(real_binding)
+    home.parent.mkdir(parents=True)
+    legacy.rename(home)                      # what another process's `refresh` does
+    assert cli.STATE == legacy               # this process still holds the old binding
+    assert cli.follow_moved_state() is True
+    assert cli.STATE == home and cli.WARRANT == home / "warrant.b64"

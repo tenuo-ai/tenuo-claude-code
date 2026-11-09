@@ -58,6 +58,7 @@ from tenuo_claude_code.paths import (
     CLI_COMMAND_LEGACY,
     bind_project_paths,
     home_state_dir,
+    project_state_dir,
     scaffold_example_policy,
 )
 from tenuo_claude_code import packs
@@ -1763,10 +1764,18 @@ def tenuo_file_target(tool: str, tin: dict) -> str | None:
     if tool not in PATH_TOOLS:
         return None
     value = (tin or {}).get(TOOL_DEFAULTS[tool][2])
+    project = os.path.realpath(DEMO_DIR)
+    if tool == "Grep":
+        # Grep reads file contents below its root (the cwd when `path` is omitted),
+        # so a root that contains a state directory would read the keys in it.
+        root = os.path.realpath(os.path.abspath(value if isinstance(value, str) and value else os.getcwd()))
+        for state_dir in {os.path.realpath(STATE), os.path.realpath(os.path.join(project, ".state"))}:
+            if os.path.isdir(state_dir) and state_dir.startswith(root.rstrip(os.sep) + os.sep):
+                where = ".state" if state_dir.startswith(project + os.sep) else "~/.tenuo state"
+                return f"{where} (inside this search root)"
     if not isinstance(value, str) or not value:
         return None
     target = os.path.realpath(os.path.abspath(value))
-    project = os.path.realpath(DEMO_DIR)
     for state_dir in {os.path.realpath(STATE), os.path.realpath(os.path.join(project, ".state"))}:
         if target == state_dir or target.startswith(state_dir + os.sep):
             return ".state" if state_dir.startswith(project + os.sep) else "~/.tenuo state"
@@ -1809,7 +1818,9 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
 
     own = tenuo_file_target(tool, tin)
     if own:
-        return done(False, f"{own} is Tenuo's own file; the agent can't read or change it", True, tool)
+        hint = (" (run `tenuo-claude refresh` to move state out of the project)"
+                if own.startswith(".state (inside") else "")
+        return done(False, f"{own} is Tenuo's own file; the agent can't read or change it{hint}", True, tool)
     if explicitly_denied(cfg, tool):
         return done(False, "listed under `deny:` in the policy", True, tool)
 
@@ -2416,6 +2427,7 @@ def cmd_mcp_proxy(_args) -> None:
                     # receipt in the background until its own timeout — its result is
                     # just discarded.)
                     tin = dict(arguments or {})
+                    follow_moved_state()
                     allowed, reason, _, tenuo_tool, authz_evidence = await asyncio.to_thread(
                         authorize_call, cfg, name, tin, None, roles,
                         live=not audit_only, return_context=True)
@@ -2866,6 +2878,8 @@ def migrate_legacy_state() -> bool:
     """
     import shutil
 
+    if os.environ.get("TENUO_STATE_DIR", "").strip():
+        return False  # an explicitly chosen location stays where it is
     if not state_in_project() or not STATE.is_dir():
         return False
     dest = home_state_dir(DEMO_DIR)
@@ -2876,6 +2890,19 @@ def migrate_legacy_state() -> bool:
     bind_project_paths(sys.modules[__name__], fallback_cwd=True)
     ensure_state_dir()
     print(f"Moved Tenuo state out of the project: .state -> {state_label()}")
+    return True
+
+
+def follow_moved_state() -> bool:
+    """Rebind paths when another process moved this project's state.
+
+    A long-lived process (the MCP proxy) binds its paths once. If `refresh` moves
+    state while it runs, the next call picks up the new location instead of
+    reading keys from, and recreating, the old one.
+    """
+    if project_state_dir(DEMO_DIR) == STATE:
+        return False
+    bind_project_paths(sys.modules[__name__], fallback_cwd=True)
     return True
 
 
