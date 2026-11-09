@@ -245,3 +245,14 @@ def test_bootstrap_keeps_a_compatible_binary(monkeypatch, cli_mod, tmp_path):
     monkeypatch.setattr(cli_mod.art, "query_binary_version", lambda path: "0.0.1")
     cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
     assert steps == ["install", "onboard"]
+
+
+def test_bootstrap_checks_the_pin_the_project_will_run(monkeypatch, cli_mod, tmp_path):
+    """A binary matching the default pin is not enough when the image is overridden."""
+    steps = _stub_bootstrap_steps(monkeypatch, cli_mod, tmp_path)
+    default_pin = cli_mod.art.authorizer_crate_version()
+    monkeypatch.setattr(cli_mod.art, "find_authorizer_binary", lambda *a, **k: tmp_path / "tenuo-authorizer")
+    monkeypatch.setattr(cli_mod.art, "query_binary_version", lambda path: default_pin)
+    monkeypatch.setenv("TENUO_AUTHORIZER_IMAGE", "tenuo/authorizer:9.9.9")
+    cli_mod.cmd_bootstrap(argparse.Namespace(native=True, install=False))
+    assert steps == ["install", "onboard"]
