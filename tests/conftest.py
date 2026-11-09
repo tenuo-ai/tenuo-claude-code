@@ -68,3 +68,12 @@ def bound(monkeypatch, tmp_path):
     for name, value in binding.items():
         monkeypatch.setattr(cli, name, value, raising=False)
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(monkeypatch, tmp_path_factory):
+    """Per-project state resolves under ~/.tenuo; keep tests out of the real home."""
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("TENUO_STATE_DIR", raising=False)

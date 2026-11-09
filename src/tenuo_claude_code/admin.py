@@ -441,7 +441,7 @@ def ensure_agent_holder_claimed(url: str, api_key: str, admin: str,
         hint = ""
         if s2 == 403:
             hint = (
-                "\n  .state/cloud.env must hold the Quick Connect / authorizer "
+                "\n  cloud.env in the state directory (`tenuo-claude state-dir`) must hold the Quick Connect / authorizer "
                 "runtime key (RBAC: agent claim + trigger fire), not the admin key.")
         raise SystemExit(f"Re-claim agent failed ({s2}): {body}{hint}")
     return True
@@ -460,7 +460,7 @@ def cmd_setup(_args) -> None:
     creds = admin_creds(cfg)
     if not creds["url"] or not creds["api_key"]:
         raise SystemExit(
-            "Set runtime Cloud credentials in .state/cloud.env:\n"
+            "Set runtime Cloud credentials in cloud.env in the state directory (`tenuo-claude state-dir`):\n"
             "  TENUO_CONNECT_TOKEN (Quick Connect) or TENUO_CONTROL_PLANE_URL + TENUO_API_KEY")
     if not creds["admin_key"]:
         raise SystemExit(
@@ -573,7 +573,7 @@ def cmd_setup(_args) -> None:
             hint = ""
             if status == 403:
                 hint = (
-                    "\n  .state/cloud.env must hold the Quick Connect / authorizer "
+                    "\n  cloud.env in the state directory (`tenuo-claude state-dir`) must hold the Quick Connect / authorizer "
                     "runtime key (RBAC: agent claim + trigger fire), not the admin key.")
             raise SystemExit(f"Claim agent failed ({status}): {body}{hint}")
         if ensure_agent_trigger_binding(url, admin, agent_id, tid):

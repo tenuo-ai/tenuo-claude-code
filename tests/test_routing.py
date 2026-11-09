@@ -1,6 +1,7 @@
 """resolve_tool / mcp_tool_name / the small policy helpers — pure logic."""
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -435,3 +436,27 @@ def test_authorizer_running_false_without_docker(cli_mod, monkeypatch, tmp_path)
     monkeypatch.setattr(cli_mod, "docker", _no_docker)
 
     assert cli_mod.authorizer_running({"name": "x"}) is False
+
+
+def test_status_json_uses_separate_local_health_listener(cli_mod, monkeypatch):
+    seen = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"version": "0.3.5+authz.3"}).encode()
+
+    monkeypatch.setattr(cli_mod, "authz_endpoint", lambda: ("tcp", cli_mod.AUTHZ_URL))
+    monkeypatch.setattr(
+        cli_mod.urllib.request,
+        "urlopen",
+        lambda url, timeout: seen.append((url, timeout)) or Response(),
+    )
+
+    assert cli_mod._status_json() == {"version": "0.3.5+authz.3"}
+    assert seen == [(cli_mod.HEALTH_URL + "/status", 3)]

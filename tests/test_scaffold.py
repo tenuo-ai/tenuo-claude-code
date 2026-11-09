@@ -329,7 +329,7 @@ def test_wiring_command_is_absolute_and_path_independent(monkeypatch, tmp_path):
     assert os.path.isabs(cmd), f"wired command must be absolute, got {cmd!r}"
     assert cmd != cli.CLI_COMMAND, "must not emit bare `tenuo-claude`"
     assert cmd == sys.executable
-    assert args == ["-m", "tenuo_claude_code.cli", "_hook"]
+    assert args == ["-c", cli._WIRED_ENTRY, "_hook"]
 
 
 def test_wiring_command_prefers_executable_launcher(monkeypatch, tmp_path):
@@ -401,3 +401,20 @@ def test_root_from_warrant_issuer(monkeypatch):
     monkeypatch.setitem(sys.modules, "tenuo", types.SimpleNamespace(Warrant=FakeWarrant))
 
     assert cli.root_from_warrant_issuer("WARRANT") == "ab" * 32
+
+
+def test_wired_entry_ignores_a_same_named_module_in_the_project(tmp_path):
+    """The wired command imports the installed package, never a file in the cwd."""
+    (tmp_path / "tenuo_claude_code.py").write_text("print('SHADOW')\nraise SystemExit(0)\n")
+    out = subprocess.run([sys.executable, "-c", cli._WIRED_ENTRY, "--version"],
+                         cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert "SHADOW" not in out.stdout
+    assert out.returncode == 0 and out.stdout.strip()
+
+
+def test_wired_entry_exits_2_when_the_package_cannot_load(tmp_path):
+    """No importable package -> exit 2, which blocks a PreToolUse call."""
+    out = subprocess.run([sys.executable, "-S", "-c", cli._WIRED_ENTRY, "_hook"],
+                         cwd=tmp_path, input="{}", capture_output=True, text=True, timeout=60)
+    assert out.returncode == 2
+    assert "fail-closed" in out.stderr
