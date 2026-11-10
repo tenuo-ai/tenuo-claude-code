@@ -64,6 +64,58 @@ from tenuo_claude_code.paths import (
     scaffold_example_policy,
 )
 from tenuo_claude_code import packs
+from tenuo_claude_code.action_identity import (
+    MCP_SERVER_NAME,
+    REQUEST_FIELD,
+    mcp_server_name,
+    mcp_capability,
+    bind_request,
+)
+from tenuo_claude_code.constraints import (
+    validate_webfetch_policy,
+    _range_bound,
+    parse_range_spec,
+    make_constraint,
+    parse_ports,
+    make_web_constraints,
+)
+from tenuo_claude_code.policy import (
+    TOOL_DEFAULTS,
+    COMMAND_EXEC_TOOLS,
+    _CAP_TO_CLAUDE,
+    claude_tool_for_cap,
+    CATCHALL_AUDIT,
+    CATCHALL_DENY,
+    slug,
+    audit_map,
+    default_mode,
+    catchall_cap,
+    subagent_roles,
+    DEFAULT_SESSION_TTL_SECONDS,
+    session_ttl_seconds,
+    validate_ttl_seconds,
+    webfetch_approval,
+    MCP_ARG_FIELD,
+    _MCP_SPEC_KEYS,
+    _mcp_constraints_from_spec,
+    parse_mcp_enforce_spec,
+    mcp_enforce_entries,
+    mcp_default_arg,
+    mcp_constraint_args,
+    governed_map,
+    approval_entries,
+    has_approval_gates,
+    MODE_ENFORCE,
+    MODE_DRY_RUN,
+    _OBSERVE_ALIASES,
+    policy_mode,
+    _normalize_posture_keys,
+)
+from tenuo_claude_code.routing import (
+    mcp_tool_name,
+    resolve_tool,
+    explicitly_denied,
+)
 from tenuo_claude_code.verify import ProbeResult, build_probes, format_text, run_probes
 
 # ---------------------------------------------------------------------------
@@ -81,7 +133,6 @@ HARNESS_TOOLS_FILE: Path
 AGENTS_DIRS: tuple
 LAUNCHER: Path
 LAUNCHER_REL: str
-MCP_SERVER_NAME = "tenuo-files"
 HOLDER_KEY: Path
 ISSUER_KEY: Path
 ISSUER_PUB: Path
@@ -363,52 +414,6 @@ POP_HEADER = "X-Tenuo-PoP"
 # an `authorizer.image` key in tenuo.yaml.
 DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.3.5"
 
-# Claude tool -> (capability, primary arg, Claude input field for that arg)
-#
-# Command-execution tools (Bash, PowerShell, Monitor) all constrain a `command`
-# string but each gets its OWN capability, not a shared `run_command`. Reasons:
-#   - enforced_capabilities() de-dups capabilities first-wins, so a shared cap
-#     would silently drop the second tool's constraint and check one shell's
-#     command against another shell's policy.
-#   - PowerShell is a different dialect from POSIX sh: prefer oneof/pattern/regex
-#     over shlex for it. Separate caps let each tool carry its own constraint.
-#   - Separate caps keep audit receipts unambiguous (which shell ran) and let an
-#     operator allow one shell while denying another.
-# All three are permission-required, side-effecting tools: never add them to the
-# harness audit bundle. Govern them via `enforce` (or deny via the catch-all).
-TOOL_DEFAULTS = {
-    "Read": ("read_file", "path", "file_path"),
-    "Write": ("write_file", "path", "file_path"),
-    "Edit": ("edit_file", "path", "file_path"),
-    "Bash": ("run_command", "command", "command"),
-    "PowerShell": ("run_powershell", "command", "command"),
-    "Monitor": ("run_monitor", "command", "command"),
-    "Glob": ("glob", "path", "path"),
-    "Grep": ("grep", "path", "path"),
-    "WebFetch": ("web_fetch", "url", "url"),
-    "WebSearch": ("web_search", "query", "query"),
-    "NotebookEdit": ("notebook_edit", "path", "notebook_path"),
-}
-# The command-execution tool class: distinct shell front-ends over a `command`
-# string. Each is an independent capability (see TOOL_DEFAULTS rationale above).
-COMMAND_EXEC_TOOLS = frozenset({"Bash", "PowerShell", "Monitor"})
-_CAP_TO_CLAUDE = {cap: tool for tool, (cap, *_) in TOOL_DEFAULTS.items()}
-
-
-def claude_tool_for_cap(cap: str) -> str:
-    """Map a Tenuo capability back to the Claude tool name (fallback: cap)."""
-    return _CAP_TO_CLAUDE.get(cap, cap)
-# Catch-all capability/tool names. "audit" is granted in the warrant (allow +
-# log); "unlisted" is intentionally NOT granted, so routing to it yields a
-# signed DENY receipt (used when default: deny).
-CATCHALL_AUDIT = "audit"
-CATCHALL_DENY = "unlisted"
-
-
-def slug(name: str) -> str:
-    return name.lower().replace("-", "_")
-
-
 # Entry point for wired commands (hooks, MCP proxy). Claude runs them with the
 # project as cwd, which `-m`/`-c` put first on sys.path; drop it so the import
 # resolves to the installed package (user-site installs included) and never to a
@@ -536,36 +541,6 @@ def mcp_wiring(cfg: dict) -> dict | None:
     return {"mcpServers": {mcp_server_name(cfg): {"command": cmd, "args": args}}}
 
 
-def audit_map(cfg: dict) -> dict:
-    """Claude tool name -> capability name for the audit-allow list."""
-    out = {}
-    for tool in cfg.get("audit", []) or []:
-        out[tool] = TOOL_DEFAULTS.get(tool, (slug(tool),))[0]
-    return out
-
-
-def default_mode(cfg: dict) -> str:
-    """Fallback posture for tools in neither `enforce` nor `allow`.
-
-    Canonical values: `deny` (block — the secure default) and `approve` (require
-    human approval; Cloud-only). The legacy `audit`/`allow` (permit + log unlisted)
-    is no longer supported — enforce must not fail open — and collapses to `deny`.
-    """
-    mode = (cfg.get("default") or "deny").strip().lower()
-    return "approve" if mode == "approve" else "deny"
-
-
-def catchall_cap(cfg: dict) -> str:
-    """Capability the /gate catch-all routes to.
-
-    `default: approve` -> the 'audit' cap, which the Cloud trigger warrant grants
-    WITH an approval gate, so an unlisted tool pauses for human sign-off. (Local
-    warrants never grant it, so locally `approve` falls back to deny.) Otherwise
-    the ungranted 'unlisted' cap -> the authorizer returns a signed DENY.
-    """
-    return CATCHALL_AUDIT if default_mode(cfg) == "approve" else CATCHALL_DENY
-
-
 def posture_advisories(cfg: dict) -> list[str]:
     """Deprecation + degradation notices for the posture model.
 
@@ -586,249 +561,6 @@ def posture_advisories(cfg: dict) -> list[str]:
     return notes
 
 
-def subagent_roles(cfg: dict) -> dict:
-    """Declared subagent roles (name -> {tools, ttl_seconds, ...}); {} when none."""
-    return cfg.get("subagents") or {}
-
-
-# Default session warrant lifetime when `ttl_seconds` is absent (1 hour).
-DEFAULT_SESSION_TTL_SECONDS = 3600
-
-
-def session_ttl_seconds(cfg: dict) -> int:
-    """Session warrant lifetime in seconds from `ttl_seconds`, else the default (1h).
-
-    Single source of truth for both mint paths — local mint (`mint_local_warrant`)
-    and the Cloud trigger config (`admin.build_warrant_config`). Validated in
-    `validate_ttl_seconds` at load time, so by the time this runs the value is a
-    positive int; the bounds check here is defensive (e.g. an in-memory cfg that
-    skipped load_config).
-    """
-    raw = cfg.get("ttl_seconds")
-    if raw is None:
-        return DEFAULT_SESSION_TTL_SECONDS
-    return validate_ttl_seconds(raw)
-
-
-def validate_ttl_seconds(raw) -> int:
-    """Coerce + validate a session `ttl_seconds` value; must be a positive integer.
-
-    Rejects bools (a YAML `true`/`false` is not a duration), non-integers, and
-    non-positive values with the tool's usual `SystemExit` error style. Mirrors how
-    `_normalize_posture_keys` fails loud on a bad `mode`/`default`."""
-    if isinstance(raw, bool) or not isinstance(raw, int):
-        raise SystemExit(
-            f"Invalid ttl_seconds: {raw!r}. Must be a positive integer (seconds).")
-    if raw <= 0:
-        raise SystemExit(
-            f"Invalid ttl_seconds: {raw}. Must be a positive integer (seconds).")
-    return raw
-
-
-def webfetch_approval(cfg: dict) -> dict | None:
-    """`enforce.WebFetch.approval` block if declared, else None (Cloud human-approval gate)."""
-    wf = (cfg.get("enforce") or {}).get("WebFetch")
-    if isinstance(wf, dict) and isinstance(wf.get("approval"), dict):
-        return wf["approval"]
-    return None
-
-
-def validate_webfetch_policy(cfg: dict) -> None:
-    """Reject `enforce.WebFetch.approval` combined with `cidrs` (fail closed).
-
-    Approval relaxes the host constraint to a wildcard and, for internal egress,
-    turns off block_private — so a `cidrs:` allowlist meant to permit ONE private
-    range would silently let EVERY private range reach the human gate, and the
-    gate's domain-only exempt can't represent CIDR membership. The two mechanisms
-    don't compose with today's url_safe primitives, so we refuse the combination
-    rather than emit a policy that's wider than it reads. Enforced once in
-    load_config, so local mint, Cloud build, and verify all see the same error.
-    """
-    wf = (cfg.get("enforce") or {}).get("WebFetch")
-    if isinstance(wf, dict) and wf.get("approval") and wf.get("cidrs"):
-        raise SystemExit(
-            "enforce.WebFetch: `approval` cannot be combined with `cidrs`.\n"
-            "  Approval wildcards the host and permits all private ranges to reach "
-            "the gate, so the cidrs allowlist would not be enforced.\n"
-            "  Use `domains:` with approval, or drop `approval` to hard-enforce cidrs.")
-
-
-# Fallback constrained arg per downstream MCP tool, used only when a policy
-# doesn't name one (back-compat for the shipped examples). The `arg:`/`args:`
-# keys in mcp.enforce are the general mechanism; this table is just a default.
-MCP_ARG_FIELD = {
-    "read_file": "path",
-    "list_directory": "path",
-    "delete_deployment": "target",
-}
-
-
-# Keys a structured mcp.enforce entry may contain.
-_MCP_SPEC_KEYS = frozenset({"arg", "args", "constraint", "approval", "exempt"})
-
-
-def _mcp_constraints_from_spec(raw: dict) -> dict:
-    """Extract {arg: constraint_spec} from a structured mcp.enforce entry.
-
-    Forms (mutually exclusive; unknown/conflicting keys are rejected, not
-    silently resolved):
-      {args: {<arg>: "<spec>", ...}}        -> constrain several named arguments
-      {arg: <name>, constraint: "<spec>"}   -> constrain one named argument
-      {constraint: "<spec>"}                -> constrain the default (`path`) arg
-    """
-    if "path" in raw:
-        raise SystemExit(
-            "mcp.enforce: `path:` is not a key; use `constraint:` for the path arg, "
-            "or `arg: <name>` + `constraint:` to constrain a different argument")
-    unknown = set(raw) - _MCP_SPEC_KEYS
-    if unknown:
-        raise SystemExit(
-            f"mcp.enforce: unknown key(s) {sorted(unknown)}; expected any of "
-            f"{sorted(_MCP_SPEC_KEYS)}")
-    has_args, has_arg, has_constraint = "args" in raw, "arg" in raw, "constraint" in raw
-    if has_args and (has_arg or has_constraint):
-        raise SystemExit("mcp.enforce: use either `args:` or `arg:`/`constraint:`, not both")
-    if has_args:
-        args = raw["args"]
-        if not isinstance(args, dict) or not args:
-            raise SystemExit(
-                f"mcp.enforce `args:` must be a non-empty map of arg->constraint, got {args!r}")
-        out = {}
-        for a, s in args.items():
-            key = str(a)
-            if not key.strip():
-                raise SystemExit("mcp.enforce `args:` argument name cannot be empty")
-            if not isinstance(s, str):
-                raise SystemExit(f"mcp.enforce `args.{a}` must be a constraint string, got {s!r}")
-            out[key] = s
-        return out
-    if has_arg:
-        key = str(raw["arg"])
-        if not key.strip():
-            raise SystemExit("mcp.enforce `arg:` name cannot be empty")
-        spec = raw.get("constraint")
-        if not isinstance(spec, str):
-            raise SystemExit("mcp.enforce: `arg:` needs a `constraint:` string")
-        return {key: spec}
-    if has_constraint:
-        spec = raw["constraint"]
-        if not isinstance(spec, str):
-            raise SystemExit(f"mcp.enforce `constraint:` must be a string, got {spec!r}")
-        return {"path": spec}
-    return {}
-
-
-def parse_mcp_enforce_spec(spec) -> dict:
-    """Parse one ``mcp.enforce`` entry into named-arg constraints + approval.
-
-    Returns ``{"constraints": {arg: spec_str}, "approval": dict|None,
-    "exempt_args": {arg: spec_str}|None}``. A bare string constrains the `path`
-    argument (back-compat); `arg:`/`args:` name any other argument(s).
-    """
-    if isinstance(spec, str):
-        return {"constraints": {"path": spec}, "approval": None, "exempt_args": None}
-    if not isinstance(spec, dict):
-        raise SystemExit(f"Invalid mcp.enforce value: {spec!r}")
-    raw = dict(spec)
-    approval = raw.get("approval")
-    if approval is not None and not isinstance(approval, dict):
-        raise SystemExit(f"Invalid mcp.enforce approval block: {approval!r}")
-    exempt_args = None
-    if isinstance(approval, dict) and isinstance(approval.get("exempt"), dict):
-        exempt_args = approval["exempt"]
-        approval = {k: v for k, v in approval.items() if k != "exempt"}
-    if isinstance(raw.get("exempt"), dict):
-        exempt_args = raw["exempt"]
-    constraints = _mcp_constraints_from_spec(raw)
-    if not constraints and not approval:
-        raise SystemExit(
-            f"Invalid mcp.enforce entry {raw!r}: need a constraint string, an "
-            "`arg`/`args` constraint, or an approval block")
-    return {"constraints": constraints, "approval": approval, "exempt_args": exempt_args}
-
-
-def mcp_enforce_entries(cfg: dict) -> dict[str, dict]:
-    return {
-        tool: parse_mcp_enforce_spec(spec)
-        for tool, spec in ((cfg.get("mcp") or {}).get("enforce") or {}).items()
-    }
-
-
-REQUEST_FIELD = "__tenuo_request"
-
-
-def mcp_server_name(cfg: dict) -> str:
-    """One policy binds one MCP server; the generated proxy has a stable default."""
-    name = (cfg.get("mcp") or {}).get("server", MCP_SERVER_NAME)
-    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name) or "__" in name:
-        raise SystemExit("mcp.server must be a server name containing letters, digits, '_' or '-'")
-    return name
-
-
-def mcp_capability(cfg: dict, tool: str) -> str:
-    if not isinstance(tool, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", tool):
-        raise SystemExit("MCP tool names must contain letters, digits, '_', '.' or '-'")
-    return f"mcp__{mcp_server_name(cfg)}__{tool}"
-
-
-def bind_request(tool: str, tin: dict, args: dict) -> dict:
-    """Bind the full invocation independently of the fields constrained by policy.
-
-    Keep canonical JSON rather than a digest so approvers can inspect the exact
-    operation covered by their signature. This reserved field is generated here,
-    never trusted from tool input or a policy constraint.
-    """
-    request = json.dumps({"tool": tool, "arguments": tin or {}},
-                         sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-                         allow_nan=False)
-    return {**args, REQUEST_FIELD: request}
-
-
-def mcp_default_arg(tool: str) -> str:
-    """The constrained arg to assume when a policy doesn't name one."""
-    return MCP_ARG_FIELD.get(tool, "path")
-
-
-def mcp_constraint_args(tool: str, parsed: dict) -> dict:
-    """arg name -> constraint spec string (``None`` = approval-gated wildcard arg).
-
-    Concrete constraints win; an approval gate only relaxes its arg(s) to
-    wildcards when there are no concrete constraints. The gated args are the
-    `exempt:` keys, or the tool's default arg when no exemptions are declared.
-    """
-    cons = parsed.get("constraints") or {}
-    if cons:
-        return dict(cons)
-    if parsed.get("approval"):
-        gated = list((parsed.get("exempt_args") or {}).keys()) or [mcp_default_arg(tool)]
-        return {a: None for a in gated}
-    return {}
-
-
-def approval_entries(cfg: dict) -> list[tuple[str, dict]]:
-    """(authorizer capability, approval settings) for every gated tool.
-
-    Includes the catch-all when `default: approve` so `tenuo-admin setup` creates
-    the session approval policy and the hook budget accounts for the wait.
-    """
-    entries: list[tuple[str, dict]] = []
-    if appr := webfetch_approval(cfg):
-        entries.append(("web_fetch", appr))
-    for g in governed_map(cfg).values():
-        if g.get("approval"):           # native enforce tool with an approval block
-            entries.append((g["cap"], g["approval"]))
-    for tool, parsed in mcp_enforce_entries(cfg).items():
-        if parsed.get("approval"):
-            entries.append((mcp_capability(cfg, tool), parsed["approval"]))
-    if default_mode(cfg) == "approve":
-        entries.append((CATCHALL_AUDIT, {"threshold": 1}))
-    return entries
-
-
-def has_approval_gates(cfg: dict) -> bool:
-    return bool(approval_entries(cfg))
-
-
 def approval_policy_id(cfg: dict, tenuo_tool: str | None = None) -> str | None:
     """Cloud approval policy id for a governed capability (session-wide by default)."""
     st = load_cloud_state()
@@ -839,27 +571,6 @@ def approval_policy_id(cfg: dict, tenuo_tool: str | None = None) -> str | None:
         if policies.get("*"):
             return policies["*"]
     return st.get("session_approval_policy_id") or st.get("web_fetch_approval_policy_id")
-
-
-# Policy posture (`mode:` in tenuo.yaml). `dry-run` is the canonical observe-only
-# value; `audit` is the deprecated spelling kept working for back-compat.
-MODE_ENFORCE = "enforce"
-MODE_DRY_RUN = "dry-run"
-_OBSERVE_ALIASES = {"dry-run", "dry_run", "dryrun", "audit"}
-
-
-def policy_mode(cfg: dict) -> str:
-    """Canonical posture: ``MODE_ENFORCE`` or ``MODE_DRY_RUN``.
-
-    Recognizes the canonical ``dry-run`` plus the deprecated ``audit`` alias (and a
-    couple of forgiving spellings). Anything else — including a typo or a value
-    like ``allow`` that belongs on ``default:`` — canonicalizes to ``enforce``
-    (fail-closed), but `posture_warnings` surfaces it so it can't fail silently.
-    """
-    raw = str(cfg.get("mode", MODE_ENFORCE)).strip().lower()
-    if raw in _OBSERVE_ALIASES:
-        return MODE_DRY_RUN
-    return MODE_ENFORCE
 
 
 def _managed_enforce_pinned() -> bool:
@@ -1078,182 +789,6 @@ def load_config() -> dict:
     if cfg.get("ttl_seconds") is not None:
         validate_ttl_seconds(cfg["ttl_seconds"])
     return cfg
-
-
-def _normalize_posture_keys(cfg: dict) -> list[str]:
-    """Canonicalize `mode`/`default` in-place; return deprecation notices.
-
-    `mode: audit` -> dry-run; `default: audit|allow` -> deny (enforce must not fail
-    open). Unknown values fail loud. Returned strings are surfaced from user-facing
-    commands (check/refresh/status), never the hook hot path.
-    """
-    deps: list[str] = []
-    raw_mode = str(cfg.get("mode", "enforce")).strip().lower()
-    if raw_mode == "audit":
-        deps.append("`mode: audit` is deprecated — rename to `mode: dry-run`")
-    elif raw_mode not in ("enforce", "dry-run", "dry_run", "dryrun"):
-        raise SystemExit(f"Unknown mode: '{raw_mode}'. Valid: enforce, dry-run.")
-    raw_default = (cfg.get("default") or "deny").strip().lower()
-    if raw_default in ("audit", "allow"):
-        deps.append(
-            f"`default: {raw_default}` is no longer supported — enforce must not "
-            "fail open. Unlisted tools are now DENIED. Use `mode: dry-run` to "
-            "observe, or add specific tools to `allow:`.")
-        cfg["default"] = "deny"
-    elif raw_default not in ("deny", "approve"):
-        raise SystemExit(f"Unknown default: '{raw_default}'. Valid: deny, approve.")
-    return deps
-
-
-def _range_bound(text: str, spec: str):
-    """Parse one side of a `range:min,max` bound; blank means open-ended (None)."""
-    text = text.strip()
-    if not text:
-        return None
-    try:
-        return float(text) if ("." in text or "e" in text.lower()) else int(text)
-    except ValueError:
-        raise SystemExit(f"range bound '{text}' is not a number in '{spec}'.")
-
-
-def parse_range_spec(spec: str) -> tuple:
-    """Validate a `range:min,max` spec and return (lo, hi) bounds (None = open).
-
-    Shared by local mint (make_constraint) and Cloud wire (admin.to_wire_constraint)
-    so both reject the same specs. A blank side is open-ended, but not both (that
-    is a match-all range), and a missing comma (`range:5`) is rejected outright —
-    otherwise Cloud would silently emit `..` (match-all) or `5..` for inputs the
-    local authorizer refuses.
-    """
-    _, _, rest = spec.partition(":")
-    if "," not in rest:
-        raise SystemExit(
-            f"range constraint needs 'min,max' (either side may be blank) in '{spec}'.")
-    lo, _, hi = rest.partition(",")
-    lo_v, hi_v = _range_bound(lo, spec), _range_bound(hi, spec)
-    if lo_v is None and hi_v is None:
-        raise SystemExit(f"range constraint needs at least one bound in '{spec}'.")
-    return lo_v, hi_v
-
-
-def make_constraint(spec: str, sandbox: str):
-    """Constraint DSL -> tenuo constraint object."""
-    from tenuo import (Cidr, Exact, NotOneOf, OneOf, Pattern, Range, Regex,
-                       Subpath, UrlPattern)
-    from tenuo_core import Shlex  # core constraint type (mintable)
-
-    spec = spec.replace("{sandbox}", sandbox)
-    kind, _, rest = spec.partition(":")
-    if kind == "subpath":
-        return Subpath(rest)
-    if kind == "shlex":
-        return Shlex(allow=[v.strip() for v in rest.split(",") if v.strip()])
-    if kind == "regex":
-        return Regex(rest)
-    if kind == "pattern":
-        return Pattern(rest)
-    if kind == "oneof":
-        return OneOf([v.strip() for v in rest.split(",")])
-    if kind == "notoneof":
-        return NotOneOf([v.strip() for v in rest.split(",")])
-    if kind == "exact":
-        return Exact(rest)
-    if kind == "urlpattern":
-        return UrlPattern(rest)
-    if kind == "cidr":
-        # Any tool argument that is an IP/host (not just WebFetch): the value
-        # must fall inside the CIDR block. Non-IP values fail closed.
-        return Cidr(rest)
-    if kind == "range":
-        return Range(*parse_range_spec(spec))
-    raise SystemExit(
-        f"Unknown constraint kind '{kind}' in '{spec}'. "
-        "Valid kinds: subpath, shlex, regex, pattern, oneof, notoneof, exact, "
-        "range, urlpattern, cidr (or a WebFetch policy with domains/cidrs). "
-        "Syntax: <kind>:<value>, e.g. subpath:{sandbox} or cidr:10.0.0.0/8.")
-
-
-def parse_ports(policy: dict) -> list[int] | None:
-    """Validate a WebFetch `ports:` allowlist -> list[int], or None when unset.
-
-    Shared by local mint (make_web_constraints) and Cloud wire
-    (admin.url_safe_ssrf_wire) so a malformed entry fails with one clear policy
-    error on both paths instead of a Python traceback. Ports are u16 in core.
-    """
-    raw = policy.get("ports")
-    if not raw:
-        return None
-    out: list[int] = []
-    for p in raw:
-        try:
-            n = int(p)
-        except (TypeError, ValueError):
-            raise SystemExit(f"tenuo.yaml WebFetch `ports:` must be integers, got {p!r}")
-        if not 1 <= n <= 65535:
-            raise SystemExit(f"tenuo.yaml WebFetch `ports:` value {n} out of range (1-65535)")
-        out.append(n)
-    return out
-
-
-def make_web_constraints(policy: dict, *, approval_gate: bool = False) -> dict:
-    """Org egress policy -> {url: UrlSafe, host: AnyOf(domains|cidrs) or Wildcard}.
-
-    approval_gate=True: SSRF-only url + wildcard host; domain policy moves to Cloud gate.
-    """
-    from tenuo_core import AnyOf, Cidr, Pattern, UrlSafe, Wildcard
-
-    domains = [str(d) for d in policy.get("domains") or []]
-    cidrs = [str(c) for c in policy.get("cidrs") or []]
-    if not domains and not cidrs:
-        raise SystemExit("WebFetch policy needs at least one of: domains, cidrs")
-    # https-only unless internal ranges are in play (internal services are
-    # often plain http); explicit `schemes:` in the policy overrides.
-    schemes = [str(s) for s in policy.get("schemes") or
-               (["https"] if not cidrs else ["http", "https"])]
-    kwargs = dict(allow_schemes=schemes,
-                  block_private=not cidrs, block_loopback=True,
-                  block_metadata=True, block_reserved=True)
-    ports = parse_ports(policy)
-    if ports:
-        kwargs["allow_ports"] = ports
-    url = UrlSafe(**kwargs)
-    if approval_gate:
-        return {"url": url, "host": Wildcard()}
-    members = [Pattern(d) for d in domains] + [Cidr(c) for c in cidrs]
-    host = members[0] if len(members) == 1 else AnyOf(members)
-    return {"url": url, "host": host}
-
-
-def governed_map(cfg: dict) -> dict:
-    """Claude tool -> dict(capability, arg, field, + constraint spec / web policy / approval).
-
-    A native value is a constraint string, or a dict: `WebFetch` takes a web policy
-    (domains/cidrs/approval); any other tool takes an `approval:` block (with an
-    optional `exempt:` constraint string on its arg) for a Cloud human-approval gate
-    — e.g. `Bash: {approval: {threshold: 1, exempt: "shlex:ls,pwd"}}`.
-    """
-    out = {}
-    for tool, spec in (cfg.get("enforce") or {}).items():
-        if tool not in TOOL_DEFAULTS:
-            raise SystemExit(f"enforce: unknown tool '{tool}'")
-        cap, arg, field = TOOL_DEFAULTS[tool]
-        if isinstance(spec, dict):
-            if tool == "WebFetch":
-                out[tool] = {"cap": cap, "arg": arg, "field": field, "web": spec}
-            elif isinstance(spec.get("approval"), dict):
-                appr = dict(spec["approval"])
-                exempt = appr.pop("exempt", None)   # constraint spec (string) on this tool's arg
-                if exempt is not None and not isinstance(exempt, str):
-                    raise SystemExit(f"enforce.{tool}.approval.exempt must be a constraint string")
-                out[tool] = {"cap": cap, "arg": arg, "field": field,
-                             "approval": appr, "exempt": exempt}
-            else:
-                raise SystemExit(
-                    f"enforce.{tool}: a structured value needs an `approval:` block "
-                    "(only WebFetch takes domains/cidrs).")
-        else:
-            out[tool] = {"cap": cap, "arg": arg, "field": field, "spec": spec}
-    return out
 
 
 def subwarrant_path(role: str) -> Path:
@@ -1674,96 +1209,6 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
     return False, f"re-authorize after approval failed: {reason}", approved_evidence
 
 
-def mcp_tool_name(tool_name: str) -> str | None:
-    """Bare MCP tool from a Claude MCP call name, else None.
-
-    Claude exposes proxied MCP tools as `mcp__<server>__<tool>` and fires the
-    PreToolUse hook on that prefixed name. We strip to the bare `<tool>` so the
-    hook can enforce it against the SAME `mcp.enforce` policy the proxy uses —
-    otherwise the prefixed name matches nothing and catch-all default-denies even
-    allowed MCP tools, shadowing the proxy. `<tool>` may contain underscores; the
-    `__` delimiter is double, so split(maxsplit=2) keeps it intact.
-    """
-    if not tool_name.startswith("mcp__"):
-        return None
-    parts = tool_name.split("__", 2)
-    return parts[2] if len(parts) == 3 and parts[2] else None
-
-
-def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
-    """Map a Claude tool call to (tenuo_tool, route, sign_args, body, governed).
-
-    - enforced native tools: real constraints (may mutate within scope).
-    - enforced MCP tools (bare downstream name or `mcp__<server>__<tool>` from the
-      hook): same policy/route the proxy uses, so hook and proxy agree.
-    - audit-listed tools: allowed + logged (no constraints).
-    - everything else: catch-all. With default: deny it routes to a capability
-      the warrant does NOT grant, so the authorizer returns a signed DENY.
-    """
-    gov = governed_map(cfg)
-    if tool_name in gov:
-        g = gov[tool_name]
-        val = (tool_input or {}).get(g["field"])
-        if "web" in g:
-            url = val if isinstance(val, str) else ""
-            try:
-                host = urllib.parse.urlsplit(url).hostname or ""
-            except ValueError:
-                host = ""
-            args = {"url": url, "host": host}
-        else:
-            if g.get("spec", "").startswith("subpath:"):
-                # Tools like Glob/Grep default their search root to the cwd;
-                # authorize what would actually be touched, not a blank.
-                if not (isinstance(val, str) and val):
-                    val = os.getcwd()
-                # Resolve symlinks so a link inside the sandbox can't point
-                # the Territory outside the Map we check (realpath ~= Layer 2
-                # for pre-existing links; races still need path_jail).
-                val = os.path.realpath(os.path.abspath(val))
-            args = {g["arg"]: val}
-        args = bind_request(tool_name, tool_input, args)
-        return g["cap"], f"/verify/{g['cap']}", args, args, True
-
-    audit = audit_map(cfg)
-    if tool_name in audit:
-        cap = audit[tool_name]
-        return cap, f"/verify/{cap}", {}, dict(tool_input or {}), False
-
-    mcp_enforce = mcp_enforce_entries(cfg)
-    bare = mcp_tool_name(tool_name)
-    if bare is not None and tool_name != mcp_capability(cfg, bare):
-        # A same-named tool on another server is not this policy's capability.
-        bare = None
-    if not tool_name.startswith("mcp__") and bare is None and tool_name in mcp_enforce:
-        bare = tool_name
-    if bare is not None and bare in mcp_enforce:
-        parsed = mcp_enforce[bare]
-        args = {}
-        for field, spec in mcp_constraint_args(bare, parsed).items():
-            val = (tool_input or {}).get(field)
-            # Canonicalize symlinks only for path-scoped (subpath) args, so the
-            # Territory we check matches the Map; never rewrite non-path values.
-            if isinstance(spec, str) and spec.startswith("subpath:") \
-                    and isinstance(val, str) and val:
-                val = os.path.realpath(os.path.abspath(val))
-            args[field] = val
-        cap = mcp_capability(cfg, bare)
-        args = bind_request(cap, tool_input, args)
-        return cap, f"/verify/{cap}", args, args, True
-
-    # Catch-all. Under `default: approve` the catch-all carries a whole-tool gate
-    # (every unlisted call requires approval), so we don't need to sign `tool` to
-    # make the gate fire. We sign it anyway so the approval's request_hash binds per
-    # tool name — approving one unlisted tool must not auto-approve another — and the
-    # signed args must match what the /gate route extracts. Under `deny` the cap is
-    # ungranted, so no args are checked (route extracts none) — keep sign_args empty.
-    if default_mode(cfg) == "approve":
-        args = bind_request(tool_name, tool_input, {"tool": tool_name})
-        return catchall_cap(cfg), "/gate", args, args, False
-    return catchall_cap(cfg), "/gate", {}, {"tool": tool_name, **(tool_input or {})}, False
-
-
 # Claude Code's subagent-spawn tool(s). Empirically "Agent" on claude 2.1.x;
 # "Task" is accepted too for forward/back-compat. If Anthropic renames the spawn
 # tool, spawns default-deny (safe) unless the new name lands in the audit list
@@ -1813,15 +1258,6 @@ def resolve_subagent_role(role: str, defs: dict[str, Path] | None = None) -> tup
     if role in BUILTIN_SUBAGENTS:
         return True, "built-in"
     return False, "no agent definition"
-
-
-def explicitly_denied(cfg: dict, tool: str) -> bool:
-    """True for a tool the policy lists under `deny:` (by its Claude or bare MCP name).
-
-    Decided before routing, so no fallback posture (`default: approve`) applies.
-    """
-    denied = cfg.get("_deny") or ()
-    return tool in denied or (mcp_tool_name(tool) or tool) in denied
 
 
 # Policy and hook wiring that live in the project. Path tools can't target them, and
@@ -2562,90 +1998,13 @@ def mcp_proxy_decision(allowed: bool, reason: str, audit_only: bool, name: str):
 
 
 def cmd_mcp_proxy(_args) -> None:
-    import asyncio
-
-    from mcp import ClientSession
-    from mcp.client.stdio import StdioServerParameters, stdio_client
-    from mcp.server import Server
-    from mcp.server.stdio import stdio_server
-    from mcp.types import CallToolResult, TextContent
-
-    cfg = load_config()
-    apply_transport_env(cfg)
-    mcp_cfg = cfg.get("mcp", {})
-    command, command_args, env, downstream = downstream_server(mcp_cfg)
-    initial_server = mcp_server_name(cfg)
-    initial_transport = {k: (cfg.get("authorizer") or {}).get(k) for k in ("transport", "socket")}
-
-    def log(m):
-        print(f"[tenuo-mcp-proxy] {m}", file=sys.stderr, flush=True)
-
-    async def run():
-        params = StdioServerParameters(command=command, args=command_args, env=env, cwd=str(DEMO_DIR))
-        async with stdio_client(params) as (dr, dw):
-            async with ClientSession(dr, dw) as down:
-                await down.initialize()
-                log(f"connected to {downstream}")
-                proxy = Server("tenuo-mcp-proxy")
-
-                @proxy.list_tools()
-                async def _lt():
-                    return (await down.list_tools()).tools
-
-                @proxy.call_tool()
-                async def _ct(name: str, arguments: dict):
-                    # HiTL note: authorize_call routes governed calls through
-                    # authorize_with_approval, so when the warrant carries an
-                    # approval gate this BLOCKS on the Cloud approval poll (in a
-                    # worker thread) and returns the approver's decision. The
-                    # downstream forward below runs only AFTER that resolves and
-                    # only while this call is still open — if the client cancels
-                    # (its tool timeout), the await is cancelled and we never
-                    # forward, so an approved-but-abandoned call does not execute.
-                    # (Forwarding is what's cancellation-safe; the to_thread worker
-                    # running the poll can't be killed and keeps polling/writing its
-                    # receipt in the background until its own timeout — its result is
-                    # just discarded.)
-                    tin = dict(arguments or {})
-                    follow_moved_state()
-                    try:
-                        current = load_config()
-                        transport = {k: (current.get("authorizer") or {}).get(k) for k in ("transport", "socket")}
-                        if (downstream_server(current.get("mcp", {}))[:3] != (command, command_args, env)
-                                or mcp_server_name(current) != initial_server or transport != initial_transport):
-                            raise ValueError("MCP server or transport changed; reconnect the MCP client")
-                        observe = is_dry_run_mode(current)
-                        current_roles = subagent_roles(current)
-                    except (Exception, SystemExit) as exc:
-                        write_receipt({"phase": "pre", "source": "mcp_proxy", "decision": "deny",
-                                       "claude_tool": name, "args": tin, "reason": str(exc)})
-                        return CallToolResult(content=[TextContent(type="text", text=f"Tenuo policy unavailable: {exc}")], isError=True)
-                    allowed, reason, _, tenuo_tool, authz_evidence = await asyncio.to_thread(
-                        authorize_call, current, mcp_capability(current, name), tin, None, current_roles,
-                        live=not observe, return_context=True)
-                    wrote = write_receipt({"phase": "pre", "source": "mcp_proxy",
-                                   "decision": "allow" if allowed else "deny",
-                                   "shadow": observe, "claude_tool": name,
-                                   "tenuo_tool": tenuo_tool,
-                                   "args": tin, "reason": reason,
-                                   "authz": authz_evidence})
-                    # strict_receipts: don't forward an allowed call we couldn't log.
-                    if allowed and not observe and not wrote and current.get("strict_receipts"):
-                        allowed, reason = False, "audit receipt unwritable, strict_receipts on (fail-closed)"
-                    forward, message = mcp_proxy_decision(allowed, reason, observe, name)
-                    if not forward:
-                        log(f"DENY {name}: {reason}")
-                        return CallToolResult(content=[TextContent(type="text", text=message)], isError=True)
-                    if not allowed:
-                        log(f"WOULD-DENY {name} (observe-only, forwarding): {reason}")
-                    # Pass the server's result through whole, so its own isError
-                    # and structured content reach the client.
-                    return await down.call_tool(name, tin)
-
-                async with stdio_server() as (r, w):
-                    await proxy.run(r, w, proxy.create_initialization_options())
-
-    asyncio.run(run())
+    from tenuo_claude_code.mcp_proxy import ProxyContext, serve
+    serve(ProxyContext(
+        DEMO_DIR=DEMO_DIR, load_config=load_config, apply_transport_env=apply_transport_env,
+        downstream_server=downstream_server, is_dry_run_mode=is_dry_run_mode,
+        subagent_roles=subagent_roles, follow_moved_state=follow_moved_state,
+        authorize_call=authorize_call, write_receipt=write_receipt,
+        mcp_proxy_decision=mcp_proxy_decision))
 
 
 # ---------------------------------------------------------------------------
