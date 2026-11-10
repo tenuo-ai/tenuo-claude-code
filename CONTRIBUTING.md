@@ -20,7 +20,7 @@ Re-run `init` or `refresh` after switching Python venvs (hooks pin `sys.executab
 2. Keep changes focused; match existing style in `src/tenuo_claude_code/`.
 3. Run `uv run --with pytest pytest` (fast unit tests, no Docker). If you touch enforcement
    or policy wiring, also run `cd demo && tenuo-claude verify` (live authorizer).
-4. Do not commit a legacy the state directory directory, real API keys, or home-directory paths.
+4. Do not commit the state directory, real API keys, or home-directory paths.
 
 Security issues: see [SECURITY.md](SECURITY.md). No public issues for vulnerabilities.
 
@@ -42,7 +42,11 @@ under `/Users/` or `C:\`.
 
 | Module | Role |
 |--------|------|
-| `src/tenuo_claude_code/cli.py` | Policy, hooks, MCP proxy, lifecycle commands |
+| `src/tenuo_claude_code/cli.py` | Project state, hooks, and lifecycle orchestration |
+| `src/tenuo_claude_code/policy.py`, `constraints.py`, `routing.py`, `action_identity.py` | Policy parsing, constraints, routing, and complete request identity without CLI state |
+| `src/tenuo_claude_code/cloud_policy.py` | Cloud warrant configuration compiler |
+| `src/tenuo_claude_code/mcp_proxy.py` | MCP transport adapter with explicit runtime callbacks |
+| `src/tenuo_claude_code/managed_runtime.py` | Administrator-owned Python runtime validation |
 | `src/tenuo_claude_code/admin.py` | One-time Cloud setup (`tenuo-admin`) |
 | `src/tenuo_claude_code/verify.py` | Policy-driven authorizer self-test |
 | `src/tenuo_claude_code/data/harness_tools.yaml` | Bundled audit-allow tool list |

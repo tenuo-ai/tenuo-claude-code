@@ -140,7 +140,7 @@ def test_install_authorizer_skips_when_current(tmp_path, monkeypatch):
     managed.parent.mkdir()
     managed.write_bytes(b"fake")
     with mock.patch.object(art, "managed_binary_path", return_value=managed):
-        with mock.patch.object(art, "query_binary_version", return_value="0.3.5+authz.3"):
+        with mock.patch.object(art, "query_binary_version", return_value=art.authorizer_crate_version()):
             with mock.patch.object(art, "download_release_binary") as dl:
                 result = art.install_authorizer(force=False)
                 assert result == managed

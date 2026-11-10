@@ -138,7 +138,7 @@ def test_init_pack_writes_policy_and_compiles(monkeypatch, tmp_path, cli_mod, bo
     ))
 
     text = (tmp_path / "tenuo.yaml").read_text()
-    assert "# pack: github-mcp v4" in text
+    assert "# pack: github-mcp v5" in text
     assert "exact:myorg" in text and "pattern:payments-api" in text
     assert called["cfg"]["mcp"]["enforce"]["merge_pull_request"]["approval"]["approver"] == "niki@tenuo.ai"
 

@@ -19,6 +19,6 @@ Code itself, and `tenuo.yaml` policies you maintain locally.
 
 ## Secrets and the state directory
 
-Never commit a legacy the state directory directory (keys, warrants, `cloud.env`) or real credentials. The demo
+Never commit the state directory (keys, warrants, `cloud.env`) or real credentials. The demo
 includes `demo/fake-secrets.env` with fake values for out-of-scope read tests.
 Do not replace those values with real secrets.

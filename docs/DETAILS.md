@@ -82,7 +82,7 @@ Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or 
 
 (`mode: audit` is a deprecated alias for `dry-run`.) Shadow mode: every call's real allow/deny is still computed against the warrant and written to the receipt log, but **nothing is blocked**. The hook deliberately emits *no* permission decision in this mode (not even "allow") because an explicit hook-allow would auto-approve calls that Claude's own settings might otherwise prompt on. So observe-only stays observe-only, and Claude's prompts remain in effect.
 
-Roll out by watching `WOULD-DENY` rows in `tenuo-claude audit`, tuning policy, then switching to `mode: enforce`. The hook reads `mode` live (next tool call); the MCP proxy picks it up on the next Claude session.
+Roll out by watching `WOULD-DENY` rows in `tenuo-claude audit`, tuning policy, then switching to `mode: enforce`. Both the hook and MCP proxy read `mode` live on the next tool call.
 
 `mode:` is a **global** switch and `default:` is the **catch-all for unlisted tools** only; they are independent. In `mode: dry-run` nothing is enforced (even tools listed under `enforce:`), so `default:` has no effect until you switch back to `mode: enforce`. Do not confuse the two: there is no `default: dry-run`. There is also no permissive catch-all: `default:` is either `deny` (block unlisted, fail-closed) or `approve` (route unlisted to a Cloud human-approval gate). To permit specific tools unconstrained, list them under `allow:`.
 
@@ -92,7 +92,7 @@ Roll out by watching `WOULD-DENY` rows in `tenuo-claude audit`, tuning policy, t
 
 After editing warrant-backed policy (`enforce`, `default`, `audit_*`, `subagents`, `mcp`, approval overlay), run `refresh`. It re-mints the session warrant (or re-fires the Cloud trigger), regenerates the gateway config, rewires hooks, and restarts the authorizer if it's running.
 
-- **`mode` change only** (`dry-run`/`audit` ↔ `enforce`): no refresh is needed for the native hook, which reads the file live. `refresh` is still safe and is the simplest habit, especially if you also govern MCP tools (the proxy sees the new posture on the next Claude session).
+- **`mode` change only** (`dry-run`/`audit` ↔ `enforce`): no refresh is needed: both the native hook and MCP proxy read the file live. Capability changes still require `refresh`. Changes to the MCP server identity, downstream process, or transport require reconnecting the proxy.
 - **Cloud capability change**: the warrant's capabilities come from the trigger config on the control plane, so re-run `tenuo-admin setup` first, then `refresh`.
 
 ### Warrant TTL and refresh

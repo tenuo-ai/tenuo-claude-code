@@ -16,18 +16,18 @@ hand-written file is the #1 footgun):
 ```bash
 # Linux fleet (systemd / Docker authorizer):
 tenuo-claude managed-template --out ./tenuo-managed --platform linux \
-  --bin /usr/local/bin/tenuo-claude        # uniform fleet-wide launcher path
+  --hook-python /opt/tenuo/venv/bin/python        # administrator-owned virtualenv
 
 # Hardened Linux fleet: only members of the `tenuo` group can connect to the
 # root-owned authorizer socket. The default is easier rollout: root-owned socket,
 # mode 0666.
 tenuo-claude managed-template --out ./tenuo-managed --platform linux \
-  --bin /usr/local/bin/tenuo-claude \
+  --hook-python /opt/tenuo/venv/bin/python \
   --socket-group tenuo
 
 # macOS fleet (native authorizer):
 tenuo-claude managed-template --out ./tenuo-managed --platform macos \
-  --bin /usr/local/bin/tenuo-claude \
+  --hook-python /opt/tenuo/venv/bin/python \
   --authorizer-bin /opt/tenuo/bin/tenuo-authorizer   # baked into the launchd plist
 ```
 
@@ -105,7 +105,7 @@ Before deploying, replace the loud placeholders in the service/env files:
 1. Publish policy from a security-owned environment with `tenuo-admin setup
    --managed`; developers should never receive a tenant-admin key.
 2. Generate artifacts with `tenuo-claude managed-template --platform linux|macos
-   --bin /opt/tenuo/bin/tenuo-claude`. For hardened Linux rollout, add
+   --hook-python /opt/tenuo/venv/bin/python`. For hardened Linux rollout, add
    `--socket-group tenuo` and provision that group (create it and add each
    governed user) before starting the authorizer service, and before users
    launch Claude, since the group controls socket connect permission.
@@ -210,3 +210,5 @@ sudo install -m 0600 -o root /dev/null /etc/tenuo/allow_insecure_tcp
 That falls back to loopback TCP, which **cannot authenticate the responder**, so
 treat the always-running, root-owned authorizer service as required, and remove the
 marker as soon as the socket endpoint is live.
+
+The hook interpreter must belong to a dedicated root-owned virtualenv, including installed dependencies and ancestor directories, with no group/world write access. Install the package there before generating templates; project-local or user-owned launchers are rejected. See [the 0.7.0 migration notes](../../docs/releases/0.7.0.md).

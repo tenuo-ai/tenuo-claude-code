@@ -1,7 +1,7 @@
 {
   "name": "tenuo",
   "displayName": "Tenuo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Task-scoped authorization for Claude Code: signed, expiring warrants constrain which tools Claude may call and with which arguments, checked before each call, with signed allow/deny receipts. Inactive until a project opts in with tenuo.yaml.",
   "author": {
     "name": "Tenuo",
