@@ -130,5 +130,19 @@ cli.cmd_mcp_proxy(None)
                 assert failed.isError and "downstream failure" in failed.content[0].text
                 denied = await client.call_tool("echo", {"value": "deny"})
                 assert denied.isError and "test decision" in denied.content[0].text
+                policy = json.loads((project / "tenuo.yaml").read_text())
+                policy["mode"] = "dry-run"
+                (project / "tenuo.yaml").write_text(json.dumps(policy))
+                assert not (await client.call_tool("echo", {"value": "deny"})).isError
+                policy["mode"] = "enforce"
+                (project / "tenuo.yaml").write_text(json.dumps(policy))
+                assert (await client.call_tool("echo", {"value": "deny"})).isError
+                # A broken replacement policy must never retain the old permissive snapshot.
+                (project / "tenuo.yaml").write_text("[invalid")
+                assert (await client.call_tool("echo", {"value": "ok"})).isError
+                policy["mcp"]["downstream"]["args"] = ["replacement.py"]
+                (project / "tenuo.yaml").write_text(json.dumps(policy))
+                changed = await client.call_tool("echo", {"value": "ok"})
+                assert changed.isError and "reconnect" in changed.content[0].text
 
     asyncio.run(exercise())

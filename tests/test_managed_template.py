@@ -14,14 +14,15 @@ from types import SimpleNamespace
 
 import pytest
 
-PINNED_BIN = "/opt/tenuo/bin/tenuo-claude"
+PINNED_BIN = "/opt/tenuo/venv/bin/python"
 
 
 @pytest.fixture
 def fleet(monkeypatch, bound):
     """A bound temp project with a uniform fleet-wide launcher path pinned, so the
     hook command resolves without depending on the test machine's PATH/venv."""
-    monkeypatch.setenv("TENUO_CLAUDE_BIN", PINNED_BIN)
+    monkeypatch.setenv("TENUO_CLAUDE_BIN", "/untrusted/project/bin/tenuo-claude")
+    monkeypatch.setattr("tenuo_claude_code.managed_runtime.validate_managed_python", lambda p: PINNED_BIN)
     return bound
 
 

@@ -241,32 +241,37 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
             per_action[cap] = {g["arg"]: to_wire_constraint(g["spec"], sandbox)}
     gate_approval = bool(approval_policy_id)
     for mtool, raw in (cfg.get("mcp", {}).get("enforce") or {}).items():
-        if mtool in per_action:
+        cap = tc.mcp_capability(cfg, mtool)
+        if cap in per_action:
             continue
         parsed = tc.parse_mcp_enforce_spec(raw)
         cons = parsed["constraints"]
         approval = parsed.get("approval")
         exempt_args = parsed.get("exempt_args") or {}
+        if cons and approval and not gate_approval:
+            continue  # never grant a gated action without a linked approval policy
         if cons:
             # Explicit constraints are the capability ceiling; approval adds a
             # human gate on top without broadening the allowed argument space.
-            per_action[mtool] = {a: to_wire_constraint(spec, sandbox) for a, spec in cons.items()}
+            per_action[cap] = {a: to_wire_constraint(spec, sandbox) for a, spec in cons.items()}
             if approval and gate_approval:
                 gate_args: dict = {}
                 for ek, es in exempt_args.items():
                     gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
-                approval_gates[mtool] = {"args": gate_args or None}
+                approval_gates[cap] = {"args": gate_args or None}
             continue
 
         if approval and gate_approval:
             # Approval-only tools need a wildcard grant so the authorizer can
             # reach the gate; the approval signature still binds exact args.
             gated = list(exempt_args.keys()) or [tc.mcp_default_arg(mtool)]
-            per_action[mtool] = {a: {"_type": "wildcard"} for a in gated}
+            per_action[cap] = {a: {"_type": "wildcard"} for a in gated}
             gate_args: dict = {}
             for ek, es in exempt_args.items():
                 gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
-            approval_gates[mtool] = {"args": gate_args or {a: {} for a in gated}}
+            approval_gates[cap] = {"args": gate_args or {a: {} for a in gated}}
+    for constraints in per_action.values():
+        constraints[tc.REQUEST_FIELD] = {"_type": "wildcard"}
     # ALLOW capabilities (unconstrained): the hook routes allow-listed tools to
     # /verify/<cap>, so the warrant must GRANT them or every WebSearch/TodoWrite/…
     # is denied in enforce mode.
@@ -282,7 +287,7 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
         # wildcards `tool` (resolve_tool signs the tool name) purely so the approval's
         # request_hash binds per tool name — approving one unlisted tool must not
         # auto-approve another — not to make the gate fire.
-        per_action.setdefault(tc.CATCHALL_AUDIT, {"tool": {"_type": "wildcard"}})
+        per_action.setdefault(tc.CATCHALL_AUDIT, {"tool": {"_type": "wildcard"}, tc.REQUEST_FIELD: {"_type": "wildcard"}})
         approval_gates.setdefault(tc.CATCHALL_AUDIT, {"args": None})
     # Subagent spawn: a signed capability whose subagent_type is constrained to
     # the declared roles. Lets the runtime route the Agent/Task spawn through the

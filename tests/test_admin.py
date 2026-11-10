@@ -88,8 +88,9 @@ def test_build_warrant_config_mcp_named_and_multi_arg():
     }
     wc = admin.build_warrant_config(cfg, None)
     pac = wc["per_action_constraints"]
-    assert pac["run_query"] == {"sql": {"_type": "regex", "_value": "^SELECT"}}
-    assert pac["http_call"] == {
+    assert pac["mcp__tenuo-files__run_query"] == {"__tenuo_request": {"_type": "wildcard"}, "sql": {"_type": "regex", "_value": "^SELECT"}}
+    assert pac["mcp__tenuo-files__http_call"] == {
+        "__tenuo_request": {"_type": "wildcard"},
         "url": {"_type": "url_pattern", "_value": "https://api.example.com/*"},
         "method": {"_type": "one_of", "_value": ["GET", "HEAD"]},
     }
@@ -112,7 +113,7 @@ def test_build_warrant_config_command_exec_tools():
     wc = admin.build_warrant_config(cfg, None)
     pac = wc["per_action_constraints"]
     assert {"run_command", "run_powershell", "run_monitor"} <= set(wc["actions"])
-    assert pac["run_powershell"] == {"command": {"_type": "one_of", "_value": ["Get-ChildItem"]}}
+    assert pac["run_powershell"] == {"__tenuo_request": {"_type": "wildcard"}, "command": {"_type": "one_of", "_value": ["Get-ChildItem"]}}
     assert pac["run_monitor"]["command"]["_type"] == "shlex"
     assert pac["run_command"]["command"]["_type"] == "shlex"
 
@@ -342,15 +343,17 @@ def test_build_warrant_config_mcp_approval_gate():
     }
     wc = admin.build_warrant_config(cfg, "apol_test")
 
-    assert wc["per_action_constraints"]["delete_deployment"] == {
+    assert wc["per_action_constraints"]["mcp__tenuo-files__delete_deployment"] == {
+        "__tenuo_request": {"_type": "wildcard"},
         "target": {"_type": "wildcard"},
     }
-    assert wc["per_action_constraints"]["read_file"] == {
+    assert wc["per_action_constraints"]["mcp__tenuo-files__read_file"] == {
+        "__tenuo_request": {"_type": "wildcard"},
         "path": {"_type": "subpath", "_value": "/sandbox"},
     }
     gates = wc["approval_gates"]
     assert gates["_policy_id"] == "apol_test"
-    assert gates["delete_deployment"]["args"]["target"]["exempt"] == {
+    assert gates["mcp__tenuo-files__delete_deployment"]["args"]["target"]["exempt"] == {
         "_type": "exact",
         "_value": "staging",
     }
@@ -389,7 +392,8 @@ def test_build_warrant_config_default_approve_gates_catchall():
     assert catchall in wc["actions"]
     # Whole-tool gate (args: None) requires approval for every unlisted call. The cap
     # wildcards `tool` only so the approval's request_hash binds per tool name.
-    assert wc["per_action_constraints"][catchall] == {"tool": {"_type": "wildcard"}}
+    assert wc["per_action_constraints"][catchall] == {
+        "__tenuo_request": {"_type": "wildcard"},"tool": {"_type": "wildcard"}}
     assert wc["approval_gates"][catchall] == {"args": None}
     assert wc["approval_gates"]["_policy_id"] == "apol_test"
 
@@ -410,7 +414,8 @@ def test_build_warrant_config_native_tool_approval_gate():
            "enforce": {"Bash": {"approval": {"threshold": 1, "exempt": "shlex:ls,pwd"}}},
            "mcp": {}, "default": "deny", "audit": []}
     wc = admin.build_warrant_config(cfg, "apol_test")
-    assert wc["per_action_constraints"]["run_command"] == {"command": {"_type": "wildcard"}}
+    assert wc["per_action_constraints"]["run_command"] == {
+        "__tenuo_request": {"_type": "wildcard"},"command": {"_type": "wildcard"}}
     assert wc["approval_gates"]["run_command"]["args"]["command"]["exempt"] == {
         "_type": "shlex", "_value": ["ls", "pwd"]}
     assert wc["approval_gates"]["_policy_id"] == "apol_test"
@@ -423,7 +428,8 @@ def test_build_warrant_config_native_approval_no_exempt_uses_whole_tool_gate():
            "enforce": {"Bash": {"approval": {"threshold": 1}}},
            "mcp": {}, "default": "deny", "audit": []}
     wc = admin.build_warrant_config(cfg, "apol_test")
-    assert wc["per_action_constraints"]["run_command"] == {"command": {"_type": "wildcard"}}
+    assert wc["per_action_constraints"]["run_command"] == {
+        "__tenuo_request": {"_type": "wildcard"},"command": {"_type": "wildcard"}}
     assert wc["approval_gates"]["run_command"] == {"args": None}
 
 

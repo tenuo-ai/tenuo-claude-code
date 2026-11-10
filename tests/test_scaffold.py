@@ -419,3 +419,19 @@ def test_wired_entry_exits_2_when_the_package_cannot_load(tmp_path):
                          cwd=tmp_path, input="{}", capture_output=True, text=True, timeout=60)
     assert out.returncode == 2
     assert "fail-closed" in out.stderr
+
+
+def test_proxy_server_rename_and_removal_preserve_foreign_servers(monkeypatch, tmp_path):
+    _patch_wiring(monkeypatch, tmp_path)
+    cfg = _make_cfg(mcp=True)
+    cfg["mcp"]["server"] = "first"
+    cli.write_claude_wiring(cfg)
+    path = tmp_path / ".mcp.json"
+    data = json.loads(path.read_text())
+    data["mcpServers"]["foreign"] = {"command": "other"}
+    path.write_text(json.dumps(data))
+    cfg["mcp"]["server"] = "second"
+    cli.write_claude_wiring(cfg)
+    assert set(json.loads(path.read_text())["mcpServers"]) == {"second", "foreign"}
+    cli.remove_claude_wiring()
+    assert set(json.loads(path.read_text())["mcpServers"]) == {"foreign"}

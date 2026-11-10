@@ -157,10 +157,11 @@ def test_cloud_warrant_config_keeps_constraints_and_approval_gate(make_cfg):
 
     wc = admin.build_warrant_config(cfg, approval_policy_id="appr_123")
 
-    assert wc["per_action_constraints"]["merge_pull_request"] == {
+    assert wc["per_action_constraints"]["mcp__tenuo-files__merge_pull_request"] == {
+        "__tenuo_request": {"_type": "wildcard"},
         "repo": {"_type": "pattern", "_value": "myorg/payments-api"}
     }
-    assert wc["approval_gates"]["merge_pull_request"] == {"args": None}
+    assert wc["approval_gates"]["mcp__tenuo-files__merge_pull_request"] == {"args": None}
     assert wc["approval_gates"]["_policy_id"] == "appr_123"
 
 
