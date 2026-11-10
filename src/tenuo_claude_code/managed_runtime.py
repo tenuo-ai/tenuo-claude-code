@@ -34,7 +34,9 @@ def validate_managed_python(python: str) -> str:
             for name in [*dirs, *files]:
                 path = Path(directory) / name
                 if path.is_symlink() and path.is_dir():
-                    raise ValueError(f"directory symlink {path} is not supported in the managed runtime")
+                    # Linux venvs commonly link lib64 to lib. Internal targets
+                    # are inspected through their real path by this same walk.
+                    path.resolve(strict=True).relative_to(environment.resolve(strict=True))
                 _trusted_path(path)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"Untrusted managed hook runtime: {exc}. "

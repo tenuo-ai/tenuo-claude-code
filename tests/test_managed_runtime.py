@@ -31,3 +31,21 @@ def test_managed_launcher_ignores_project_override(monkeypatch):
     command, args = cli.managed_command_parts({}, "_managed-hook")
     assert command == "/opt/tenuo/venv/bin/python"
     assert args == ["-I", "-m", "tenuo_claude_code.cli", "_managed-hook"]
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_runtime_directory_links_must_stay_inside_environment(tmp_path, monkeypatch, external):
+    env = tmp_path / "venv"
+    (env / "bin").mkdir(parents=True)
+    (env / "lib").mkdir()
+    (env / "pyvenv.cfg").write_text("home = /usr/bin")
+    (env / "bin/python").write_text("fake")
+    (env / "lib64").symlink_to(tmp_path if external else env / "lib", target_is_directory=True)
+    checked = []
+    monkeypatch.setattr(managed_runtime, "_trusted_path", checked.append)
+    if external:
+        with pytest.raises(SystemExit, match="Untrusted managed hook runtime"):
+            managed_runtime.validate_managed_python(str(env / "bin/python"))
+    else:
+        assert managed_runtime.validate_managed_python(str(env / "bin/python")) == str(env / "bin/python")
+        assert env / "lib64" in checked
