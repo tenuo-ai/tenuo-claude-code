@@ -72,3 +72,31 @@ def test_reserved_input_cannot_replace_binding(make_cfg):
     args = cli.resolve_tool(cfg, "Write", tin)[2]
     assert args[cli.REQUEST_FIELD] != "forged"
     assert json.loads(args[cli.REQUEST_FIELD])["arguments"] == tin
+
+
+@pytest.mark.parametrize("allowed,gated_server,gated_tool", [
+    ("mcp__prod-server__delete_deployment", "prod_server", "delete_deployment"),
+    ("mcp__Prod__delete_deployment", "prod", "delete_deployment"),
+    ("mcp__prod__delete-deployment", "prod", "delete_deployment"),
+    ("mcp__prod__Delete_Deployment", "prod", "delete_deployment"),
+    ("MCP__prod__delete_deployment", "prod", "delete_deployment"),
+])
+def test_mcp_allow_identity_survives_routing_and_compilation(
+        allowed, gated_server, gated_tool, make_cfg, monkeypatch):
+    cfg = make_cfg(audit=[allowed], mcp={"server": gated_server, "enforce": {
+        gated_tool: {"args": {"target": "pattern:*"}, "approval": {"threshold": 1}}}})
+    gated = cli.mcp_capability(cfg, gated_tool)
+    monkeypatch.setattr(cli, "use_cloud_trigger", lambda cfg: False)
+    assert cli.audit_map(cfg) == {allowed: allowed}
+    assert cli.resolve_tool(cfg, allowed, {"target": "prod"})[0] == allowed
+    assert cli.resolve_tool(cfg, gated, {"target": "prod"})[0] == gated
+    warrant = cli.mint_local_warrant(cfg, SigningKey.generate(), SigningKey.generate())
+    assert allowed in warrant.capabilities
+    assert gated not in warrant.capabilities
+    cloud = admin.build_warrant_config(cfg, approval_policy_id=None)
+    assert allowed in cloud["actions"]
+    assert gated not in cloud["actions"]
+    linked = admin.build_warrant_config(cfg, approval_policy_id="approval-policy")
+    assert allowed in linked["actions"] and gated in linked["actions"]
+    assert gated in linked["approval_gates"]
+    assert allowed not in linked["approval_gates"]

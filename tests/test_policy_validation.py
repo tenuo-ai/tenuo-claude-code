@@ -52,3 +52,11 @@ def test_invalid_mcp_semantics_rejected(entry, bound, monkeypatch):
 def test_native_semantics_validated_on_load(enforce, bound, monkeypatch):
     with pytest.raises((SystemExit, ValueError)):
         load_policy({'enforce': enforce}, bound, monkeypatch)
+
+
+def test_distinct_mcp_allow_identity_does_not_overlap_gate(bound, monkeypatch):
+    cfg = load_policy({"allow": ["mcp__prod-server__delete_deployment"],
+        "mcp": {"server": "prod_server", "enforce": {
+            "delete_deployment": {"approval": {"threshold": 1}}}}}, bound, monkeypatch)
+    assert cli.audit_map(cfg) == {
+        "mcp__prod-server__delete_deployment": "mcp__prod-server__delete_deployment"}

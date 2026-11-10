@@ -65,7 +65,14 @@ def audit_map(cfg: dict) -> dict:
     """Claude tool name -> capability name for the audit-allow list."""
     out = {}
     for tool in cfg.get("audit", []) or []:
-        out[tool] = TOOL_DEFAULTS.get(tool, (slug(tool),))[0]
+        # MCP identities are case- and punctuation-sensitive. Slugging can
+        # turn an allow grant for one server/tool into authority for another.
+        # Preserve even differently-cased prefixes instead of normalizing them
+        # into the reserved MCP namespace.
+        if tool.lower().startswith("mcp__"):
+            out[tool] = tool
+        else:
+            out[tool] = TOOL_DEFAULTS.get(tool, (slug(tool),))[0]
     return out
 
 
