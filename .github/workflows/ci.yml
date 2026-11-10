@@ -125,6 +125,8 @@ jobs:
           toolchain: stable
 
       - name: Install tenuo-authorizer (managed install)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           uv run tenuo-claude install-authorizer
           echo "$HOME/.tenuo/bin" >> "$GITHUB_PATH"
@@ -165,7 +167,7 @@ jobs:
         uses: Vampire/setup-wsl@v3
         with:
           distribution: Ubuntu-24.04
-          additional-packages: curl ca-certificates
+          additional-packages: curl ca-certificates build-essential pkg-config libssl-dev
 
       - name: Copy checkout into the WSL filesystem
         shell: wsl-bash {0}
@@ -205,6 +207,10 @@ jobs:
 
       - name: bootstrap + verify against the live authorizer (in WSL)
         shell: wsl-bash {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Windows variables require explicit forwarding into WSL.
+          WSLENV: GH_TOKEN
         run: |
           set -euxo pipefail
           export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.tenuo/bin:$PATH"

@@ -203,7 +203,13 @@ def platform_triple() -> str:
 
 def _github_release_assets(tag: str) -> list[dict]:
     url = f"https://api.github.com/repos/{RELEASE_REPO}/releases/tags/{tag}"
-    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    headers = {"Accept": "application/vnd.github+json"}
+    # Authenticate only the fixed GitHub API endpoint, never asset downloads or
+    # their redirects. Shared CI egress quickly exhausts anonymous API limits.
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     with _urlopen(req) as resp:
         data = json.loads(resp.read().decode())
     return data.get("assets") or []
