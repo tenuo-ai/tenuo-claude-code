@@ -100,6 +100,9 @@ def echo(value: str) -> dict[str, str]:
     if value == "error":
         raise ValueError("downstream failure")
     return {"value": value}
+@server.tool()
+def _delete(value: str) -> dict[str, str]:
+    return {"value": "must not run"}
 server.run(transport="stdio")
 ''')
     (project / "tenuo.yaml").write_text(json.dumps({
@@ -123,12 +126,38 @@ cli.cmd_mcp_proxy(None)
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as client:
                 await client.initialize()
-                assert [t.name for t in (await client.list_tools()).tools] == ["echo"]
+                assert {t.name for t in (await client.list_tools()).tools} == {"echo", "_delete"}
+                ambiguous = await client.call_tool("_delete", {"value": "ok"})
+                assert ambiguous.isError and "MCP tool names" in ambiguous.content[0].text
                 ok = await client.call_tool("echo", {"value": "ok"})
                 assert not ok.isError and ok.structuredContent == {"value": "ok"}
                 failed = await client.call_tool("echo", {"value": "error"})
                 assert failed.isError and "downstream failure" in failed.content[0].text
                 denied = await client.call_tool("echo", {"value": "deny"})
                 assert denied.isError and "test decision" in denied.content[0].text
+                policy = json.loads((project / "tenuo.yaml").read_text())
+                policy["mode"] = "dry-run"
+                (project / "tenuo.yaml").write_text(json.dumps(policy))
+                assert not (await client.call_tool("echo", {"value": "deny"})).isError
+                policy["mode"] = "enforce"
+                (project / "tenuo.yaml").write_text(json.dumps(policy))
+                assert (await client.call_tool("echo", {"value": "deny"})).isError
+                # Valid YAML with invalid semantics must also fail before authorization.
+                for replacement in [
+                    {"arg": "value", "constraint": "unknown:value"},
+                    {"approval": {"threshold": 1}, "exempt": {"value": "unknown:value"}},
+                ]:
+                    policy["mcp"]["enforce"]["echo"] = replacement
+                    (project / "tenuo.yaml").write_text(json.dumps(policy))
+                    invalid = await client.call_tool("echo", {"value": "ok"})
+                    assert invalid.isError and "policy unavailable" in invalid.content[0].text
+                policy["mcp"]["enforce"]["echo"] = {"arg": "value", "constraint": "pattern:*"}
+                # A broken replacement policy must never retain the old permissive snapshot.
+                (project / "tenuo.yaml").write_text("[invalid")
+                assert (await client.call_tool("echo", {"value": "ok"})).isError
+                policy["mcp"]["downstream"]["args"] = ["replacement.py"]
+                (project / "tenuo.yaml").write_text(json.dumps(policy))
+                changed = await client.call_tool("echo", {"value": "ok"})
+                assert changed.isError and "reconnect" in changed.content[0].text
 
     asyncio.run(exercise())

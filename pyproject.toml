@@ -1,6 +1,6 @@
 [project]
 name = "tenuo-claude-code"
-version = "0.6.4"
+version = "0.7.0"
 description = "Tenuo governance for Claude Code — warrants, hooks, MCP proxy, and Cloud lifecycle"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,18 +23,21 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "tenuo>=0.3.5,<0.4",
-    "mcp>=1.10,<2",
+    "tenuo>=0.3.6,<0.4",
+    "mcp>=1.30,<2",
     "PyYAML>=6.0",
-    "certifi>=2024.0",
+    "certifi>=2026.10.18",
     "cryptography>=42.0",
+    # Security floors for MCP transitive dependencies.
+    "anyio>=4.14.2",
+    "PyJWT>=2.15.0",
 ]
 
 [project.urls]
 Homepage = "https://tenuo.ai"
-Repository = "https://github.com/tenuo-ai/claude-governance"
-Documentation = "https://github.com/tenuo-ai/claude-governance#readme"
-Issues = "https://github.com/tenuo-ai/claude-governance/issues"
+Repository = "https://github.com/tenuo-ai/tenuo-claude-code"
+Documentation = "https://github.com/tenuo-ai/tenuo-claude-code#readme"
+Issues = "https://github.com/tenuo-ai/tenuo-claude-code/issues"
 
 [project.scripts]
 tenuo-claude = "tenuo_claude_code.cli:main"
@@ -60,6 +63,10 @@ include = [
     "docs",
     "examples",
     "tests",
+    "plugins",
+    ".claude-plugin",
+    ".gitattributes",
+    "requirements.txt",
     "demo/README.md",
     "demo/.claude/agents",
     "demo/.mcp.json",

@@ -237,7 +237,7 @@ def test_resolve_tool_command_exec_tools(cli_mod, make_cfg, tool, cap):
         cfg, tool, {"command": "Get-ChildItem"})
     assert rcap == cap
     assert route == f"/verify/{cap}"
-    assert sign_args == {"command": "Get-ChildItem"}
+    assert {k: v for k, v in sign_args.items() if k != cli_mod.REQUEST_FIELD} == {"command": "Get-ChildItem"}
     assert governed is True
 
 
@@ -252,9 +252,9 @@ def test_command_exec_tools_get_independent_capabilities(cli_mod, make_cfg):
     caps = cli_mod.enforced_capabilities(cfg)
     assert {"run_command", "run_powershell", "run_monitor"} <= set(caps)
     # each carries its own command constraint, none dropped
-    assert set(caps["run_command"]) == {"command"}
-    assert set(caps["run_powershell"]) == {"command"}
-    assert set(caps["run_monitor"]) == {"command"}
+    assert set(caps["run_command"]) == {"command", cli_mod.REQUEST_FIELD}
+    assert set(caps["run_powershell"]) == {"command", cli_mod.REQUEST_FIELD}
+    assert set(caps["run_monitor"]) == {"command", cli_mod.REQUEST_FIELD}
     assert type(caps["run_command"]["command"]).__name__ == "Shlex"
     assert type(caps["run_powershell"]["command"]).__name__ == "OneOf"
 
@@ -264,7 +264,7 @@ def test_resolve_tool_webfetch_extracts_host(cli_mod, make_cfg):
     cap, route, sign_args, body, governed = cli_mod.resolve_tool(
         cfg, "WebFetch", {"url": "https://api.github.com/repos"})
     assert cap == "web_fetch"
-    assert sign_args == {"url": "https://api.github.com/repos", "host": "api.github.com"}
+    assert {k: v for k, v in sign_args.items() if k != cli_mod.REQUEST_FIELD} == {"url": "https://api.github.com/repos", "host": "api.github.com"}
     assert governed is True
 
 
@@ -274,7 +274,7 @@ def test_resolve_tool_audit_listed(cli_mod, make_cfg):
         cfg, "WebSearch", {"query": "x"})
     assert cap == "web_search"
     assert governed is False
-    assert sign_args == {}            # audit tools carry no constraint args
+    assert {k: v for k, v in sign_args.items() if k != cli_mod.REQUEST_FIELD} == {}            # audit tools carry no constraint args
     assert body == {"query": "x"}
 
 
@@ -300,8 +300,8 @@ def test_resolve_tool_mcp_bare_name(cli_mod, make_cfg, tmp_path):
     cfg = make_cfg(mcp={"enforce": {"read_file": "subpath:/sb"}})
     cap, route, sign_args, body, governed = cli_mod.resolve_tool(
         cfg, "read_file", {"path": str(tmp_path / "f")})
-    assert cap == "read_file"
-    assert route == "/verify/read_file"
+    assert cap == "mcp__tenuo-files__read_file"
+    assert route == "/verify/mcp__tenuo-files__read_file"
     assert governed is True
 
 
@@ -309,7 +309,7 @@ def test_resolve_tool_mcp_prefixed_name(cli_mod, make_cfg, tmp_path):
     cfg = make_cfg(mcp={"enforce": {"read_file": "subpath:/sb"}})
     cap, route, sign_args, body, governed = cli_mod.resolve_tool(
         cfg, "mcp__tenuo-files__read_file", {"path": str(tmp_path / "f")})
-    assert cap == "read_file"
+    assert cap == "mcp__tenuo-files__read_file"
     assert governed is True
 
 
@@ -376,9 +376,9 @@ def test_resolve_tool_mcp_named_arg(cli_mod, make_cfg):
     cfg = make_cfg(mcp={"enforce": {"run_query": {"arg": "sql", "constraint": "regex:^SELECT"}}})
     cap, route, sign_args, body, governed = cli_mod.resolve_tool(
         cfg, "run_query", {"sql": "SELECT 1", "other": "ignored"})
-    assert cap == "run_query"
-    assert route == "/verify/run_query"
-    assert sign_args == {"sql": "SELECT 1"}     # only the constrained arg is signed
+    assert cap == "mcp__tenuo-files__run_query"
+    assert route == "/verify/mcp__tenuo-files__run_query"
+    assert {k: v for k, v in sign_args.items() if k != cli_mod.REQUEST_FIELD} == {"sql": "SELECT 1"}     # constraint fields remain separate from the complete request
     assert governed is True
 
 
@@ -387,8 +387,8 @@ def test_resolve_tool_mcp_multi_arg(cli_mod, make_cfg):
         "args": {"url": "urlpattern:https://api.example.com/*", "method": "oneof:GET,HEAD"}}}})
     cap, route, sign_args, body, governed = cli_mod.resolve_tool(
         cfg, "http_call", {"url": "https://api.example.com/v1", "method": "GET"})
-    assert cap == "http_call"
-    assert sign_args == {"url": "https://api.example.com/v1", "method": "GET"}
+    assert cap == "mcp__tenuo-files__http_call"
+    assert {k: v for k, v in sign_args.items() if k != cli_mod.REQUEST_FIELD} == {"url": "https://api.example.com/v1", "method": "GET"}
     assert governed is True
 
 
@@ -398,8 +398,8 @@ def test_enforced_capabilities_mcp_named_and_multi_arg(cli_mod, make_cfg):
         "http_call": {"args": {"url": "urlpattern:https://x/*", "method": "oneof:GET"}},
     }})
     caps = cli_mod.enforced_capabilities(cfg)
-    assert set(caps["run_query"]) == {"sql"}
-    assert set(caps["http_call"]) == {"url", "method"}
+    assert set(caps["mcp__tenuo-files__run_query"]) == {"sql", cli_mod.REQUEST_FIELD}
+    assert set(caps["mcp__tenuo-files__http_call"]) == {"url", "method", cli_mod.REQUEST_FIELD}
 
 
 def test_approval_entries_native_and_mcp(cli_mod, make_cfg):
@@ -408,7 +408,7 @@ def test_approval_entries_native_and_mcp(cli_mod, make_cfg):
         mcp={"enforce": {"delete_deployment": {"approval": {"threshold": 1}}}},
     )
     caps = {cap for cap, _ in cli_mod.approval_entries(cfg)}
-    assert caps == {"web_fetch", "delete_deployment"}
+    assert caps == {"web_fetch", "mcp__tenuo-files__delete_deployment"}
 
 
 def test_resolve_tool_mcp_delete_deployment_target(cli_mod, make_cfg):
@@ -417,9 +417,9 @@ def test_resolve_tool_mcp_delete_deployment_target(cli_mod, make_cfg):
     }}})
     cap, route, sign_args, body, governed = cli_mod.resolve_tool(
         cfg, "delete_deployment", {"target": "production"})
-    assert cap == "delete_deployment"
-    assert route == "/verify/delete_deployment"
-    assert sign_args == {"target": "production"}
+    assert cap == "mcp__tenuo-files__delete_deployment"
+    assert route == "/verify/mcp__tenuo-files__delete_deployment"
+    assert {k: v for k, v in sign_args.items() if k != cli_mod.REQUEST_FIELD} == {"target": "production"}
     assert governed is True
 
 

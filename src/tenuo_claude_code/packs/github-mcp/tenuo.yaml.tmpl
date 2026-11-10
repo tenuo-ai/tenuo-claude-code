@@ -7,6 +7,7 @@ mode: dry-run          # flip to enforce when the WOULD-DENY log looks right
 default: deny
 
 mcp:
+  server: github       # must match the server name in Claude MCP settings
   enforce:
     # GitHub MCP tools take the account (owner) and the repository name (repo)
     # as separate arguments. Both are checked on every governed call.

@@ -20,6 +20,24 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate release tag and package versions
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          uv run --frozen python - <<'PYTHON'
+          import os, tomllib
+          from pathlib import Path
+          from tenuo_claude_code import __version__
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          assert version == __version__, "Package versions disagree"
+          assert os.environ["RELEASE_REF"] == f"refs/tags/v{version}", "Publish requires the matching release tag"
+          PYTHON
+
+      - name: Regression tests
+        run: uv run --frozen --with pytest pytest
 
       - name: Build
         run: uv build

@@ -13,6 +13,7 @@ Here Claude Code's own permissions allowed the GitHub MCP server's `get_file_con
 
 ```yaml
 mcp:
+  server: github             # must match the client MCP server name
   enforce:
     get_file_contents:
       args:
@@ -23,9 +24,9 @@ default: deny
 
 ```
 $ tenuo-claude audit
-  ALLOW      [gov] mcp__github__get_file_contents -> get_file_contents  authorized  owner=tenuo-ai path=README.md repo=tenuo
-  DENY       [gov] mcp__github__get_file_contents -> get_file_contents  Constraint not satisfied  owner=tenuo-ai path=README.md repo=tenuo-cloud
-  DENY       [gov] mcp__github__get_file_contents -> get_file_contents  Constraint not satisfied  owner=torvalds path=README repo=linux
+  ALLOW      [gov] mcp__github__get_file_contents -> mcp__github__get_file_contents  authorized  owner=tenuo-ai path=README.md repo=tenuo
+  DENY       [gov] mcp__github__get_file_contents -> mcp__github__get_file_contents  Constraint not satisfied  owner=tenuo-ai path=README.md repo=tenuo-cloud
+  DENY       [gov] mcp__github__get_file_contents -> mcp__github__get_file_contents  Constraint not satisfied  owner=torvalds path=README repo=linux
 ```
 
 The same check covers Claude's own tools: reads and edits stay inside the project, the shell runs only the commands you list, and WebFetch reaches only the domains you name.
@@ -259,6 +260,7 @@ subagents:                  # optional: each role runs under a narrower warrant
     tools: [Read, Grep, Glob]
 
 mcp:                        # optional: govern a downstream MCP server's tools
+  server: tenuo-files        # client MCP server name (default: tenuo-files)
   downstream: ./your_mcp_server.py   # or {command: npx, args: [...], env: {...}}
   enforce:
     read_file: "subpath:{sandbox}"
@@ -267,12 +269,15 @@ mcp:                        # optional: govern a downstream MCP server's tools
       constraint: "oneof:analytics,staging"
 ```
 
+MCP capabilities include the server name: `mcp__<server>__<tool>`. A different server with the same tool name does not inherit these grants. For upgrades, see [0.7.0 migration notes](docs/releases/0.7.0.md).
+
 ### Any MCP client
 
 `tenuo-claude mcp-proxy` serves `mcp.downstream` over stdio and checks each call against the policy before forwarding it, so the same rules apply in Cursor, Claude Desktop or any other MCP client. The downstream can be any stdio server. Env values can reference the proxy's environment, which keeps tokens out of `tenuo.yaml`:
 
 ```yaml
 mcp:
+  server: github
   downstream:
     command: docker
     args: [run, -i, --rm, -e, GITHUB_PERSONAL_ACCESS_TOKEN, ghcr.io/github/github-mcp-server]

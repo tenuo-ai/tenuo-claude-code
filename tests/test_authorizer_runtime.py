@@ -140,7 +140,7 @@ def test_install_authorizer_skips_when_current(tmp_path, monkeypatch):
     managed.parent.mkdir()
     managed.write_bytes(b"fake")
     with mock.patch.object(art, "managed_binary_path", return_value=managed):
-        with mock.patch.object(art, "query_binary_version", return_value="0.3.5+authz.3"):
+        with mock.patch.object(art, "query_binary_version", return_value=art.authorizer_crate_version()):
             with mock.patch.object(art, "download_release_binary") as dl:
                 result = art.install_authorizer(force=False)
                 assert result == managed
@@ -225,3 +225,22 @@ def test_choose_backend_env_docker_beats_saved_native(monkeypatch):
     args = argparse.Namespace(native=False, docker=False)
     assert art.choose_backend(args, saved="native") == "docker"
     assert art.choose_backend(argparse.Namespace(native=True, docker=False), saved="native") == "native"
+
+
+@pytest.mark.parametrize('variable', ['GH_TOKEN', 'GITHUB_TOKEN', None])
+def test_release_lookup_authentication_stays_on_api(monkeypatch, tmp_path, variable):
+    import io
+    monkeypatch.delenv('GH_TOKEN', raising=False)
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    if variable:
+        monkeypatch.setenv(variable, 'test-token')
+    requests = []
+    def open_request(req):
+        requests.append(req)
+        return io.BytesIO(b'{"assets": []}')
+    monkeypatch.setattr(art, '_urlopen', open_request)
+    assert art._github_release_assets('v0.3.6') == []
+    assert requests[0].full_url == 'https://api.github.com/repos/tenuo-ai/tenuo/releases/tags/v0.3.6'
+    assert requests[0].get_header('Authorization') == ('Bearer test-token' if variable else None)
+    art._download_url('https://release-assets.githubusercontent.com/example', tmp_path / 'asset')
+    assert requests[1].get_header('Authorization') is None
