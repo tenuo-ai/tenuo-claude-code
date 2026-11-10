@@ -786,6 +786,28 @@ def load_config() -> dict:
         mcp_capability(cfg, tool)
         if REQUEST_FIELD in mcp_constraint_args(tool, parsed) or REQUEST_FIELD in (parsed.get("exempt_args") or {}):
             raise SystemExit(f"{REQUEST_FIELD} is reserved for complete-request binding")
+    # Validate semantics on every load, including proxy reloads while an older
+    # gateway/warrant is still active. Never authorize under invalid new policy.
+    sandbox = cfg["_sandbox_abs"]
+    gated_names = {cap for cap, _ in approval_entries(cfg)}
+    for tool, entry in governed_map(cfg).items():
+        if "web" in entry:
+            make_web_constraints(entry["web"])
+        elif "spec" in entry:
+            make_constraint(entry["spec"], sandbox)
+        if entry.get("exempt") is not None:
+            make_constraint(entry["exempt"], sandbox)
+        if entry["cap"] in gated_names:
+            gated_names.add(tool)
+    for tool, parsed in mcp_enforce_entries(cfg).items():
+        for spec in [*parsed["constraints"].values(), *(parsed.get("exempt_args") or {}).values()]:
+            make_constraint(spec, sandbox)
+        if parsed.get("approval"):
+            gated_names.update((tool, mcp_capability(cfg, tool)))
+    clashes = sorted(tool for tool, cap in audit_map(cfg).items()
+                     if tool in gated_names or cap in gated_names)
+    if clashes:
+        raise SystemExit(f"{', '.join(clashes)}: `allow:` overlaps an approval-gated tool or capability")
     if cfg.get("ttl_seconds") is not None:
         validate_ttl_seconds(cfg["ttl_seconds"])
     return cfg

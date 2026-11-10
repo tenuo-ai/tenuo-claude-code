@@ -137,6 +137,16 @@ cli.cmd_mcp_proxy(None)
                 policy["mode"] = "enforce"
                 (project / "tenuo.yaml").write_text(json.dumps(policy))
                 assert (await client.call_tool("echo", {"value": "deny"})).isError
+                # Valid YAML with invalid semantics must also fail before authorization.
+                for replacement in [
+                    {"arg": "value", "constraint": "unknown:value"},
+                    {"approval": {"threshold": 1}, "exempt": {"value": "unknown:value"}},
+                ]:
+                    policy["mcp"]["enforce"]["echo"] = replacement
+                    (project / "tenuo.yaml").write_text(json.dumps(policy))
+                    invalid = await client.call_tool("echo", {"value": "ok"})
+                    assert invalid.isError and "policy unavailable" in invalid.content[0].text
+                policy["mcp"]["enforce"]["echo"] = {"arg": "value", "constraint": "pattern:*"}
                 # A broken replacement policy must never retain the old permissive snapshot.
                 (project / "tenuo.yaml").write_text("[invalid")
                 assert (await client.call_tool("echo", {"value": "ok"})).isError

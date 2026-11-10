@@ -213,6 +213,11 @@ def parse_mcp_enforce_spec(spec) -> dict:
     approval = raw.get("approval")
     if approval is not None and not isinstance(approval, dict):
         raise SystemExit(f"Invalid mcp.enforce approval block: {approval!r}")
+    for value in (raw.get("exempt"), (approval or {}).get("exempt")):
+        if value is not None and (not isinstance(value, dict) or
+                any(not isinstance(k, str) or not k.strip() or not isinstance(v, str)
+                    for k, v in value.items())):
+            raise SystemExit("mcp.enforce exemptions must map argument names to constraint strings")
     exempt_args = None
     if isinstance(approval, dict) and isinstance(approval.get("exempt"), dict):
         exempt_args = approval["exempt"]

@@ -28,6 +28,10 @@ def validate_managed_python(python: str) -> str:
     try:
         if not (environment / "pyvenv.cfg").is_file():
             raise ValueError("use a dedicated administrator-owned virtualenv")
+        settings = dict(line.split("=", 1) for line in (environment / "pyvenv.cfg").read_text().splitlines() if "=" in line)
+        settings = {key.strip().lower(): value.strip().lower() for key, value in settings.items()}
+        if settings.get("include-system-site-packages", "false") != "false":
+            raise ValueError("system-site inheritance is not supported in the managed runtime")
         _trusted_path(environment)
         _trusted_path(interpreter)
         for directory, dirs, files in os.walk(environment):
@@ -38,6 +42,20 @@ def validate_managed_python(python: str) -> str:
                     # are inspected through their real path by this same walk.
                     path.resolve(strict=True).relative_to(environment.resolve(strict=True))
                 _trusted_path(path)
+                if path.suffix == ".egg-link":
+                    raise ValueError(f"editable install {path} is not supported in the managed runtime")
+                if path.suffix == ".pth" and path.is_file():
+                    for line in path.read_text().splitlines():
+                        line = line.rstrip()
+                        if not line or line.startswith("#"):
+                            continue
+                        # Executable .pth code can install arbitrary import hooks;
+                        # do not execute it to discover its targets during validation.
+                        if line.startswith(("import ", "import\t")):
+                            raise ValueError(f"executable .pth file {path} is not supported in the managed runtime")
+                        target = (path.parent / line).resolve(strict=True)
+                        target.relative_to(environment.resolve(strict=True))
+                        _trusted_path(target)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"Untrusted managed hook runtime: {exc}. "
                          "Install tenuo-claude-code in a root-owned venv and pass "

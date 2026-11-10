@@ -49,3 +49,28 @@ def test_runtime_directory_links_must_stay_inside_environment(tmp_path, monkeypa
     else:
         assert managed_runtime.validate_managed_python(str(env / "bin/python")) == str(env / "bin/python")
         assert env / "lib64" in checked
+
+
+@pytest.mark.parametrize('kind', ['external', 'editable', 'executable', 'system', 'internal'])
+def test_managed_import_paths(kind, tmp_path, monkeypatch):
+    env = tmp_path / 'venv'
+    (env / 'bin').mkdir(parents=True)
+    site = env / 'lib/python3.12/site-packages'
+    site.mkdir(parents=True)
+    (env / 'bin/python').write_text('fake')
+    (env / 'pyvenv.cfg').write_text('include-system-site-packages = ' + ('true' if kind == 'system' else 'false'))
+    monkeypatch.setattr(managed_runtime, '_trusted_path', lambda path: None)
+    if kind == 'external':
+        (site / 'project.pth').write_text(str(tmp_path))
+    elif kind == 'editable':
+        (site / 'project.egg-link').write_text(str(tmp_path))
+    elif kind == 'executable':
+        (site / 'project.pth').write_text('import sys; sys.path.insert(0, "/developer/checkout")')
+    elif kind == 'internal':
+        (site / 'vendor').mkdir()
+        (site / 'vendor.pth').write_text('# trusted internal package\nvendor\n')
+    if kind == 'internal':
+        assert managed_runtime.validate_managed_python(str(env / 'bin/python')) == str(env / 'bin/python')
+    else:
+        with pytest.raises(SystemExit, match='Untrusted managed hook runtime'):
+            managed_runtime.validate_managed_python(str(env / 'bin/python'))

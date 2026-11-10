@@ -212,3 +212,5 @@ treat the always-running, root-owned authorizer service as required, and remove 
 marker as soon as the socket endpoint is live.
 
 The hook interpreter must belong to a dedicated root-owned virtualenv, including installed dependencies and ancestor directories, with no group/world write access. Install the package there before generating templates; project-local or user-owned launchers are rejected. See [the 0.7.0 migration notes](../../docs/releases/0.7.0.md).
+
+Managed environments must disable `include-system-site-packages`, use non-editable installs, and contain no executable `.pth` startup hooks or `.egg-link` files. Plain `.pth` paths may only point inside the validated virtualenv. As the administrator, create it with `python3 -m venv --without-pip /opt/tenuo/venv`, then run `uv pip install --python /opt/tenuo/venv/bin/python tenuo-claude-code==0.7.0`.
