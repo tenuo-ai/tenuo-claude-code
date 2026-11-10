@@ -77,12 +77,13 @@ def serve(context: ProxyContext) -> None:
                             raise ValueError("MCP server or transport changed; reconnect the MCP client")
                         observe = context.is_dry_run_mode(current)
                         current_roles = context.subagent_roles(current)
+                        capability = mcp_capability(current, name)
                     except (Exception, SystemExit) as exc:
                         context.write_receipt({"phase": "pre", "source": "mcp_proxy", "decision": "deny",
                                        "claude_tool": name, "args": tin, "reason": str(exc)})
                         return CallToolResult(content=[TextContent(type="text", text=f"Tenuo policy unavailable: {exc}")], isError=True)
                     allowed, reason, _, tenuo_tool, authz_evidence = await asyncio.to_thread(
-                        context.authorize_call, current, mcp_capability(current, name), tin, None, current_roles,
+                        context.authorize_call, current, capability, tin, None, current_roles,
                         live=not observe, return_context=True)
                     wrote = context.write_receipt({"phase": "pre", "source": "mcp_proxy",
                                    "decision": "allow" if allowed else "deny",

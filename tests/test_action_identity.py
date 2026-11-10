@@ -100,3 +100,28 @@ def test_mcp_allow_identity_survives_routing_and_compilation(
     assert allowed in linked["actions"] and gated in linked["actions"]
     assert gated in linked["approval_gates"]
     assert allowed not in linked["approval_gates"]
+
+
+@pytest.mark.parametrize('server,tool', [
+    ('prod', '_delete'), ('prod_', 'delete'), ('prod__other', 'delete'),
+    ('prod', 'other__delete'), ('_prod', 'delete'),
+])
+def test_ambiguous_mcp_grants_are_rejected(server, tool, make_cfg):
+    cfg = make_cfg(mcp={'server': server})
+    with pytest.raises(SystemExit):
+        cli.mcp_capability(cfg, tool)
+    name = f'mcp__{server}__{tool}'
+    with pytest.raises(SystemExit):
+        cli.audit_map(make_cfg(audit=[name]))
+
+
+@pytest.mark.parametrize('default', ['deny', 'approve'])
+@pytest.mark.parametrize('name', ['mcp__prod___delete', 'mcp__prod__other__delete'])
+def test_ambiguous_incoming_mcp_names_fail_before_grant_lookup(name, default, make_cfg):
+    # Even an old in-memory policy containing an ambiguous allow must not grant it.
+    cfg = make_cfg(default=default, audit=[name], mcp={'server': 'prod', 'enforce': {'_delete': 'pattern:*'}})
+    with pytest.raises(ValueError):
+        cli.resolve_tool(cfg, name, {'path': 'anything'})
+    allowed, reason, _, _ = cli.authorize_call(cfg, name, {}, None, {})
+    assert not allowed
+    assert 'MCP' in reason

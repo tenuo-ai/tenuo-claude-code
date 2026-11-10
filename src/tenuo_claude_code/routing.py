@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import urllib.parse
-from .action_identity import bind_request, mcp_capability
+from .action_identity import bind_request, mcp_capability, validate_mcp_identity
 from .policy import governed_map, audit_map, mcp_enforce_entries, mcp_constraint_args, default_mode, catchall_cap
 
 
@@ -32,6 +32,8 @@ def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
     - everything else: catch-all. With default: deny it routes to a capability
       the warrant does NOT grant, so the authorizer returns a signed DENY.
     """
+    if tool_name.lower().startswith("mcp__"):
+        validate_mcp_identity(tool_name)
     gov = governed_map(cfg)
     if tool_name in gov:
         g = gov[tool_name]

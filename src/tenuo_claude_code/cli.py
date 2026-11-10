@@ -1469,7 +1469,10 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
         allowed, reason = authorize(SPAWN_CAP, route, sign_args, sign_args)
         return done(allowed, reason, True, SPAWN_CAP)
 
-    tenuo_tool, route, sign_args, body, governed = resolve_tool(cfg, tool, tin)
+    try:
+        tenuo_tool, route, sign_args, body, governed = resolve_tool(cfg, tool, tin)
+    except ValueError as exc:
+        return done(False, str(exc), True, tool)
     warrant_b64 = None
     if agent_type and roles:
         sw = subwarrant_path(agent_type)

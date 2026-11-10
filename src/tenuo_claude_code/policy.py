@@ -1,6 +1,6 @@
 """Pure policy parsing and capability descriptions, independent of CLI state."""
 from __future__ import annotations
-from .action_identity import mcp_capability
+from .action_identity import mcp_capability, validate_mcp_identity
 
 
 # Claude tool -> (capability, primary arg, Claude input field for that arg)
@@ -70,6 +70,10 @@ def audit_map(cfg: dict) -> dict:
         # Preserve even differently-cased prefixes instead of normalizing them
         # into the reserved MCP namespace.
         if tool.lower().startswith("mcp__"):
+            try:
+                validate_mcp_identity(tool)
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
             out[tool] = tool
         else:
             out[tool] = TOOL_DEFAULTS.get(tool, (slug(tool),))[0]
