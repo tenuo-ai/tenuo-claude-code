@@ -361,36 +361,79 @@ def summarize(state: Path, prepared: dict, proc: subprocess.CompletedProcess | N
     }
 
 
-def cmd_run(args) -> int:
-    workspace = Path(args.workspace).expanduser()
-    if not workspace.is_dir():
-        print(json.dumps({"ok": False, "error": f"workspace {workspace} is not a directory"}))
-        return 2
-    state = Path(args.state).expanduser() if args.state else Path(
-        tempfile.mkdtemp(prefix="tenuo-claude-run-"))
-    prompt = args.prompt if args.prompt != "-" else sys.stdin.read()
+def execute(state: Path, *, warrant: str, holder_key: str, trusted_roots: list[str],
+            workspace: Path, prompt: str, tools: list[str] | None = None, model: str | None = None,
+            max_turns: int | None = None, timeout: int = 1800, claude: str | None = None,
+            claude_args: list[str] | None = None, on_receipt=None) -> dict:
+    """Verify the grant, run Claude Code under it, and return the summary.
+
+    ``on_receipt(row)`` is called for each checked tool call while Claude runs.
+    """
+    if not Path(workspace).is_dir():
+        return {"ok": False, "error": f"workspace {workspace} is not a directory"}
     try:
-        prepared = prepare(state, warrant=_read_secret(args.warrant),
-                           holder_key=_read_secret(args.holder_key),
-                           trusted_roots=[_read_secret(r) for r in args.trusted_root],
-                           workspace=workspace)
-        claude = args.claude or os.environ.get("TENUO_CLAUDE_BIN") or shutil.which("claude")
+        prepared = prepare(state, warrant=warrant, holder_key=holder_key,
+                           trusted_roots=trusted_roots, workspace=Path(workspace))
+        claude = claude or os.environ.get("TENUO_CLAUDE_BIN") or shutil.which("claude")
         if not claude:
             raise ValueError("claude is not installed (or set --claude / TENUO_CLAUDE_BIN)")
-        argv = claude_argv(claude, state, prompt, tools=args.tools.split(","),
-                           model=args.model, max_turns=args.max_turns, extra=args.claude_args)
+        argv = claude_argv(claude, state, prompt, tools=list(tools or DEFAULT_TOOLS),
+                           model=model, max_turns=max_turns, extra=list(claude_args or []))
     except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"ok": False, "error": f"grant refused: {exc}"}))
-        return 2
+        return {"ok": False, "error": f"grant refused: {exc}"}
     env = {k: v for k, v in os.environ.items() if not k.startswith("TENUO_")}
+    stop = None
+    if on_receipt is not None:
+        import threading
+        stop = threading.Event()
+
+        def follow() -> None:
+            seen = 0
+            path = state / RECEIPTS_FILE
+            while not stop.is_set():
+                stop.wait(1.0)
+                try:
+                    lines = path.read_text().splitlines() if path.exists() else []
+                except OSError:
+                    continue
+                for line in lines[seen:]:
+                    try:
+                        on_receipt(json.loads(line))
+                    except Exception:  # noqa: BLE001 - progress is best effort
+                        pass
+                seen = len(lines)
+        threading.Thread(target=follow, daemon=True).start()
     try:
         proc = subprocess.run(argv, cwd=os.path.realpath(workspace), env=env,
-                              capture_output=True, text=True, timeout=args.timeout,
+                              capture_output=True, text=True, timeout=timeout,
                               stdin=subprocess.DEVNULL)
         summary = summarize(state, prepared, proc)
     except subprocess.TimeoutExpired:
         summary = summarize(state, prepared, None, timed_out=True)
+    finally:
+        if stop is not None:
+            time.sleep(1.2)
+            stop.set()
+    return summary
+
+
+def cmd_run(args) -> int:
+    state = Path(args.state).expanduser() if args.state else Path(
+        tempfile.mkdtemp(prefix="tenuo-claude-run-"))
+    prompt = args.prompt if args.prompt != "-" else sys.stdin.read()
+    try:
+        warrant, holder_key = _read_secret(args.warrant), _read_secret(args.holder_key)
+        roots = [_read_secret(r) for r in args.trusted_root]
+    except OSError as exc:
+        print(json.dumps({"ok": False, "error": f"grant refused: {exc}"}))
+        return 2
+    summary = execute(state, warrant=warrant, holder_key=holder_key, trusted_roots=roots,
+                      workspace=Path(args.workspace).expanduser(), prompt=prompt,
+                      tools=args.tools.split(","), model=args.model, max_turns=args.max_turns,
+                      timeout=args.timeout, claude=args.claude, claude_args=args.claude_args)
     print(json.dumps(summary, indent=2 if args.pretty else None))
+    if (summary.get("error") or "").startswith(("grant refused", "workspace")):
+        return 2
     return 0 if summary["ok"] else 1
 
 
@@ -419,6 +462,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["worker"]:
+        from .worker import main as worker_main
+        return worker_main(argv[1:])
     if argv[:1] == ["_hook"]:
         hp = argparse.ArgumentParser(prog="tenuo-claude run _hook")
         hp.add_argument("--state", required=True)
