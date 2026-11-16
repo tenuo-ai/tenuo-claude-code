@@ -160,6 +160,18 @@ def _denial_hint(tool: str, cap: str, reason: str) -> str:
     return reason
 
 
+def revoked(grant: dict, chain: list) -> bool:
+    """True when the grant's root warrant is listed in its revocation file."""
+    path = grant.get("revoked_file")
+    if not path:
+        return False
+    try:
+        listed = set(Path(path).read_text().split())
+    except FileNotFoundError:
+        return False
+    return chain[0].id in listed or chain[-1].id in listed
+
+
 def decide(grant: dict, tool: str, tool_input: dict) -> dict:
     """Check one call. Returns a receipt body with decision and reason."""
     from tenuo import Authorizer
@@ -175,7 +187,15 @@ def decide(grant: dict, tool: str, tool_input: dict) -> dict:
     except KeyError:
         return {**base, "decision": "deny", "reason": f"{tool} is not part of this grant"}
     base.update(cap=cap, args=args)
+    path = args.get("path") if tool in PATH_TOOLS else None
+    if isinstance(path, str) and ".git" in path.split(os.sep):
+        # Git's own files hold hooks, credential helpers and remotes: code and secrets.
+        return {**base, "decision": "deny",
+                "reason": "files inside .git are off limits; use the granted git commands"}
     chain = decode_chain(grant["warrant"])
+    if revoked(grant, chain):
+        return {**base, "decision": "deny", "warrant_id": chain[-1].id,
+                "reason": "the machine's owner revoked this grant"}
     leaf = chain[-1]
     holder = signing_key(grant["holder_key"])
     authz = Authorizer(trusted_roots=[public_key(r) for r in grant["trusted_roots"]])
@@ -195,7 +215,12 @@ def decide(grant: dict, tool: str, tool_input: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _append_receipt(state: Path, body: dict) -> dict:
+def _canonical(row: dict) -> bytes:
+    return json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _append_receipt(state: Path, body: dict, key=None) -> dict:
+    """Append one receipt, chained to the previous one and, with ``key``, signed by it."""
     import fcntl
 
     path = state / RECEIPTS_FILE
@@ -207,8 +232,12 @@ def _append_receipt(state: Path, body: dict) -> dict:
             if line.strip():
                 prev = json.loads(line)["hash"]
         row = {**body, "prev": prev}
-        row["hash"] = hashlib.sha256(
-            json.dumps(row, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if key is not None:
+            row["signer"] = base64.b64encode(key.public_key.to_bytes()).decode()
+        canonical = _canonical(row)
+        row["hash"] = hashlib.sha256(canonical).hexdigest()
+        if key is not None:
+            row["sig"] = base64.b64encode(bytes(key.sign_raw(canonical))).decode()
         fh.seek(0, os.SEEK_END)
         fh.write(json.dumps(row, sort_keys=True) + "\n")
         fh.flush()
@@ -216,21 +245,44 @@ def _append_receipt(state: Path, body: dict) -> dict:
     return row
 
 
-def read_receipts(state: Path) -> tuple[list[dict], bool]:
-    """All receipts and whether the hash chain is intact."""
+def _sig_ok(signer: str, canonical: bytes, sig: str) -> bool:
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        Ed25519PublicKey.from_public_bytes(base64.b64decode(signer)).verify(
+            base64.b64decode(sig), canonical)
+        return True
+    except Exception:  # noqa: BLE001 - any failure is a bad signature
+        return False
+
+
+def verify_rows(rows: list[dict], signer: str | None = None) -> bool:
+    """True when the hash chain is intact and, if ``signer`` is given, every row is signed by it."""
+    prev = None
+    for row in rows:
+        body = {k: v for k, v in row.items() if k not in ("hash", "sig")}
+        canonical = _canonical(body)
+        if row.get("prev") != prev or row.get("hash") != hashlib.sha256(canonical).hexdigest():
+            return False
+        if signer is not None and (row.get("signer") != signer
+                                   or not _sig_ok(signer, canonical, row.get("sig") or "")):
+            return False
+        prev = row["hash"]
+    return True
+
+
+def read_receipts(state: Path, signer: str | None = None) -> tuple[list[dict], bool]:
+    """All receipts and whether the chain (and, with ``signer``, every signature) checks out."""
     path = state / RECEIPTS_FILE
     if not path.exists():
         return [], True
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    prev = None
-    for row in rows:
-        body = {k: v for k, v in row.items() if k != "hash"}
-        digest = hashlib.sha256(
-            json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        if row.get("prev") != prev or row.get("hash") != digest:
-            return rows, False
-        prev = row["hash"]
-    return rows, True
+    return rows, verify_rows(rows, signer)
+
+
+def receipt_key(state: Path):
+    """The key receipts in this run are signed with: the warrant's holder."""
+    grant = json.loads((state / GRANT_FILE).read_text())
+    return signing_key(grant["holder_key"])
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +303,7 @@ def hook(state: Path) -> None:
         body = decide(grant, tool, event.get("tool_input") or {})
         if event.get("agent_type"):
             body["agent_type"] = event["agent_type"]
-        _append_receipt(state, body)
+        _append_receipt(state, body, signing_key(grant["holder_key"]))
         decision = body["decision"]
         reason = (f"Tenuo allowed {tool}" if decision == "allow"
                   else f"Tenuo denied {tool}: {body['reason']}")
@@ -279,7 +331,7 @@ def _hook_command(state: Path) -> str:
 
 
 def prepare(state: Path, *, warrant: str, holder_key: str, trusted_roots: list[str],
-            workspace: Path) -> dict:
+            workspace: Path, revoked_file: str | None = None) -> dict:
     """Verify the grant and write the run's state. Raises ValueError when unusable."""
     from tenuo import Authorizer
 
@@ -299,6 +351,10 @@ def prepare(state: Path, *, warrant: str, holder_key: str, trusted_roots: list[s
     grant = {"warrant": warrant.strip(), "holder_key": holder_key.strip(),
              "trusted_roots": [r.strip() for r in trusted_roots],
              "workspace": os.path.realpath(workspace)}
+    if revoked_file:
+        grant["revoked_file"] = str(revoked_file)
+        if revoked(grant, chain):
+            raise ValueError("the machine's owner revoked this grant")
     fd = os.open(state / GRANT_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
         json.dump(grant, fh)
@@ -309,8 +365,9 @@ def prepare(state: Path, *, warrant: str, holder_key: str, trusted_roots: list[s
         "permissions": {"defaultMode": "dontAsk"},
     }
     (state / SETTINGS_FILE).write_text(json.dumps(settings, indent=2))
-    return {"warrant_id": leaf.id, "expires_at": str(leaf.expires_at()),
-            "capabilities": sorted(leaf.tools)}
+    return {"warrant_id": leaf.id, "grant_id": chain[0].id, "expires_at": str(leaf.expires_at()),
+            "capabilities": sorted(leaf.tools),
+            "signer": base64.b64encode(holder.public_key.to_bytes()).decode()}
 
 
 def claude_argv(claude: str, state: Path, prompt: str, *, tools: list[str],
@@ -331,7 +388,7 @@ def claude_argv(claude: str, state: Path, prompt: str, *, tools: list[str],
 
 def summarize(state: Path, prepared: dict, proc: subprocess.CompletedProcess | None,
               *, timed_out: bool = False, error: str | None = None) -> dict:
-    rows, chain_ok = read_receipts(state)
+    rows, chain_ok = read_receipts(state, prepared.get("signer"))
     allowed = [r for r in rows if r.get("decision") == "allow"]
     denied = [r for r in rows if r.get("decision") == "deny"]
     result_text, cost, claude_error = None, None, None
@@ -357,23 +414,61 @@ def summarize(state: Path, prepared: dict, proc: subprocess.CompletedProcess | N
                    for r in denied],
         "tools_used": sorted({r.get("tool") for r in allowed if r.get("tool")}),
         "receipts": {"file": str(state / RECEIPTS_FILE), "count": len(rows),
-                     "head": rows[-1]["hash"] if rows else None, "chain_ok": chain_ok},
+                     "head": rows[-1]["hash"] if rows else None, "chain_ok": chain_ok,
+                     "signed_by": prepared.get("signer")},
     }
+
+
+def _run_claude(argv: list[str], workspace, env: dict, timeout: int, should_stop):
+    """The finished process, or the stop reason (a str) when ``should_stop`` fired."""
+    if should_stop is None:
+        return subprocess.run(argv, cwd=os.path.realpath(workspace), env=env, capture_output=True,
+                              text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    import threading
+    proc = subprocess.Popen(argv, cwd=os.path.realpath(workspace), env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL, start_new_session=True)
+    out: dict = {}
+    reader = threading.Thread(target=lambda: out.update(zip(("stdout", "stderr"), proc.communicate())),
+                              daemon=True)
+    reader.start()
+    deadline = time.time() + timeout
+    while reader.is_alive():
+        reader.join(1.0)
+        reason = should_stop() if reader.is_alive() else None
+        if reason or (reader.is_alive() and time.time() > deadline):
+            import signal
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait(5)
+            except Exception:  # noqa: BLE001
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:  # noqa: BLE001
+                    pass
+            reader.join(5)
+            if reason:
+                return f"stopped: {reason}"
+            raise subprocess.TimeoutExpired(argv, timeout)
+    return subprocess.CompletedProcess(argv, proc.returncode, out.get("stdout", ""), out.get("stderr", ""))
 
 
 def execute(state: Path, *, warrant: str, holder_key: str, trusted_roots: list[str],
             workspace: Path, prompt: str, tools: list[str] | None = None, model: str | None = None,
             max_turns: int | None = None, timeout: int = 1800, claude: str | None = None,
-            claude_args: list[str] | None = None, on_receipt=None) -> dict:
+            claude_args: list[str] | None = None, on_receipt=None,
+            revoked_file: str | None = None, should_stop=None) -> dict:
     """Verify the grant, run Claude Code under it, and return the summary.
 
     ``on_receipt(row)`` is called for each checked tool call while Claude runs.
+    ``should_stop()`` is polled every second; when it returns a reason, Claude is stopped.
     """
     if not Path(workspace).is_dir():
         return {"ok": False, "error": f"workspace {workspace} is not a directory"}
     try:
         prepared = prepare(state, warrant=warrant, holder_key=holder_key,
-                           trusted_roots=trusted_roots, workspace=Path(workspace))
+                           trusted_roots=trusted_roots, workspace=Path(workspace),
+                           revoked_file=revoked_file)
         claude = claude or os.environ.get("TENUO_CLAUDE_BIN") or shutil.which("claude")
         if not claude:
             raise ValueError("claude is not installed (or set --claude / TENUO_CLAUDE_BIN)")
@@ -404,10 +499,11 @@ def execute(state: Path, *, warrant: str, holder_key: str, trusted_roots: list[s
                 seen = len(lines)
         threading.Thread(target=follow, daemon=True).start()
     try:
-        proc = subprocess.run(argv, cwd=os.path.realpath(workspace), env=env,
-                              capture_output=True, text=True, timeout=timeout,
-                              stdin=subprocess.DEVNULL)
-        summary = summarize(state, prepared, proc)
+        proc = _run_claude(argv, workspace, env, timeout, should_stop)
+        if isinstance(proc, str):
+            summary = summarize(state, prepared, None, error=proc)
+        else:
+            summary = summarize(state, prepared, proc)
     except subprocess.TimeoutExpired:
         summary = summarize(state, prepared, None, timed_out=True)
     finally:

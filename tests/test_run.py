@@ -52,6 +52,9 @@ def _g(grant):
     ("mcp__x__y", {}, "deny"),
     ("NotebookEdit", {"notebook_path": "{ws}/n.ipynb"}, "deny"),
     ("TodoWrite", {"todos": []}, "allow"),
+    ("Edit", {"file_path": "{ws}/.git/hooks/pre-commit"}, "deny"),
+    ("Read", {"file_path": "{ws}/.git/config"}, "deny"),
+    ("Read", {"file_path": "{ws}/.gitignore"}, "allow"),
 ])
 def test_decide(grant, tool, tin, want, monkeypatch):
     monkeypatch.chdir(grant["workspace"])
@@ -133,3 +136,55 @@ def test_hook_writes_chained_receipts(grant, tmp_path, monkeypatch, capsys):
 def test_hook_fails_closed_without_state(tmp_path, monkeypatch, capsys):
     out = _hook(tmp_path / "missing", {"tool_name": "Read", "tool_input": {}}, monkeypatch, capsys)
     assert out["permissionDecision"] == "deny"
+
+
+def test_receipts_are_signed_by_the_holder(grant, tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    prepared = run.prepare(state, warrant=grant["warrant"], holder_key=grant["holder_key"],
+                           trusted_roots=grant["trusted_roots"], workspace=grant["workspace"])
+    signer = prepared["signer"]
+    assert signer == _b64(grant["_holder"].public_key.to_bytes())
+    _hook(state, {"tool_name": "Bash", "tool_input": {"command": "git status"}}, monkeypatch, capsys)
+    rows, ok = run.read_receipts(state, signer)
+    assert ok and rows[0]["sig"] and rows[0]["signer"] == signer
+    from tenuo import SigningKey
+    assert run.read_receipts(state, _b64(SigningKey.generate().public_key.to_bytes()))[1] is False
+    # Re-hashing a tampered row doesn't help without the key.
+    row = dict(rows[0], decision="deny")
+    body = {k: v for k, v in row.items() if k not in ("hash", "sig")}
+    row["hash"] = run.hashlib.sha256(run._canonical(body)).hexdigest()
+    assert run.verify_rows([row], signer) is False
+
+
+def test_revoked_grant_is_refused_and_denies_calls(grant, tmp_path, monkeypatch, capsys):
+    revoked = tmp_path / "revoked"
+    state = tmp_path / "state"
+    run.prepare(state, warrant=grant["warrant"], holder_key=grant["holder_key"],
+                trusted_roots=grant["trusted_roots"], workspace=grant["workspace"],
+                revoked_file=str(revoked))
+    leaf_id = run.decode_chain(grant["warrant"])[0].id
+    revoked.write_text(leaf_id + "\n")
+    out = _hook(state, {"tool_name": "Bash", "tool_input": {"command": "git status"}}, monkeypatch, capsys)
+    assert out["permissionDecision"] == "deny" and "revoked" in out["permissionDecisionReason"]
+    with pytest.raises(ValueError, match="revoked"):
+        run.prepare(tmp_path / "s2", warrant=grant["warrant"], holder_key=grant["holder_key"],
+                    trusted_roots=grant["trusted_roots"], workspace=grant["workspace"],
+                    revoked_file=str(revoked))
+
+
+def test_should_stop_ends_claude(grant, tmp_path):
+    claude = tmp_path / "claude"
+    claude.write_text("#!/bin/sh\nsleep 30\n")
+    claude.chmod(0o755)
+    calls = []
+
+    def stop():
+        calls.append(1)
+        return "revoked" if len(calls) > 1 else None
+    import time
+    started = time.time()
+    out = run.execute(tmp_path / "state", warrant=grant["warrant"], holder_key=grant["holder_key"],
+                      trusted_roots=grant["trusted_roots"], workspace=grant["workspace"], prompt="x",
+                      claude=str(claude), should_stop=stop)
+    assert out["ok"] is False and out["error"] == "stopped: revoked"
+    assert time.time() - started < 15
