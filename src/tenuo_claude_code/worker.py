@@ -216,11 +216,24 @@ def git(folder: Path, *args: str, check: bool = True) -> str:
     return proc.stdout.strip()
 
 
-def sign_report(key, report: dict) -> dict:
-    """The report with ``signer`` and an Ed25519 ``sig`` over its canonical JSON (without ``sig``)."""
-    body = {**{k: v for k, v in report.items() if k != "sig"}, "signer": public_key_b64(key)}
-    canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
-    return {**body, "sig": base64.b64encode(bytes(key.sign_raw(canonical))).decode()}
+REPORT_TOOL = "claude_report"
+
+
+def sign_report(key, report: dict, chain: list | None) -> dict:
+    """The report with a Tenuo proof: signed by this machine as holder of the job's warrant.
+
+    Hermes checks it with ``tenuo_core.verify_meta`` over the same argument JSON. A job
+    refused before its warrant checked out has no chain, so its report is unsigned.
+    """
+    import tenuo_core
+    from tenuo.meta import argument_json
+
+    body = {k: v for k, v in report.items() if k != "proof"}
+    if not chain:
+        return body
+    ts = int(time.time())
+    env = tenuo_core.sign_meta(chain, key, REPORT_TOOL, argument_json(body), ts)
+    return {**body, "proof": {"warrant": env["warrant"], "signature": env["signature"], "ts": ts}}
 
 
 def report_for(summary: dict, *, mode: str, branch: str | None, pushed: bool,
@@ -316,7 +329,8 @@ def handle(hermes: Hermes, job: dict, *, name: str, claude: str | None) -> dict:
             start_branch = git(folder, "rev-parse", "--abbrev-ref", "HEAD")
             git(folder, "switch", "-c", branch)
     except Exception as exc:  # noqa: BLE001
-        report = sign_report(key, {"ok": False, "error": f"refused by the machine: {exc}", "report": "summary"})
+        report = sign_report(key, {"ok": False, "error": f"refused by the machine: {exc}", "report": "summary"},
+                             None)
         hermes.result(job_id, report)
         print(f"✗ job {job_id} refused: {exc}")
         return report
@@ -365,7 +379,8 @@ def handle(hermes: Hermes, job: dict, *, name: str, claude: str | None) -> dict:
         summary["receipts"] = {**(summary.get("receipts") or {}), "count": len(rows),
                                "head": rows[-1]["hash"] if rows else None, "chain_ok": chain_ok}
     report = sign_report(key, report_for(summary, mode=grant.get("report", "summary"), branch=branch,
-                                         pushed=pushed, commits=commits, push_error=push_error))
+                                         pushed=pushed, commits=commits, push_error=push_error),
+                         chain)
     print(f"← job {job_id}: {'ok' if report['ok'] else report.get('error')}"
           + (f", pushed {branch}" if pushed else ""))
     hermes.result(job_id, report)

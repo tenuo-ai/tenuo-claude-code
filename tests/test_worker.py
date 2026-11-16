@@ -66,7 +66,7 @@ def test_check_job(tmp_path, monkeypatch):
 
 def test_a_job_not_rooted_in_this_machine_is_refused(tmp_path, monkeypatch):
     """Hermes (or anyone) signing its own root can't get a job run here."""
-    from tenuo import SigningKey, Subpath, Warrant
+    from tenuo import Subpath, Warrant
     mine, hermes, grant, share = _setup(tmp_path, monkeypatch)
     forged = Warrant.mint_builder().capability("read_file", {"path": Subpath(str(share))}) \
         .holder(mine.public_key).ttl(60).mint(hermes)
@@ -111,7 +111,7 @@ def test_revoke_ends_the_grant(tmp_path, monkeypatch, capsys):
 
 def test_report_is_signed_and_fixed_shape(tmp_path, monkeypatch):
     from tenuo_claude_code import run
-    mine, *_ = _setup(tmp_path, monkeypatch)
+    mine, hermes, grant, _ = _setup(tmp_path, monkeypatch)
     summary = {"ok": True, "result": "I fixed it. Here is the key: SECRET", "allowed": 3,
                "denied": [{"tool": "Bash", "args": {"command": "cat ~/.ssh/id_ed25519"}}],
                "receipts": {"count": 4, "head": "abc", "chain_ok": True, "signed_by": "k"},
@@ -122,11 +122,20 @@ def test_report_is_signed_and_fixed_shape(tmp_path, monkeypatch):
     full = worker.report_for(summary, mode="full", branch="claude/x", pushed=True,
                              commits=[{"id": "a1b2c3d", "subject": "fix"}], push_error=None)
     assert full["result"].startswith("I fixed it") and full["denied"]
-    signed = worker.sign_report(mine, short)
-    body = {k: v for k, v in signed.items() if k != "sig"}
-    canonical = __import__("json").dumps(body, sort_keys=True, separators=(",", ":")).encode()
-    assert run._sig_ok(signed["signer"], canonical, signed["sig"])
-    assert not run._sig_ok(signed["signer"], canonical.replace(b"true", b"fals"), signed["sig"])
+    chain = run.decode_chain(_narrow(grant, hermes, mine.public_key, folder="repo")["warrant"])
+    signed = worker.sign_report(mine, short, chain)
+    assert verify(signed) is True
+    assert verify({**signed, "pushed": False}) is False
+
+
+def verify(report):
+    """What Hermes does with a report."""
+    import tenuo_core
+    from tenuo.meta import argument_json
+    proof = report["proof"]
+    body = {k: v for k, v in report.items() if k != "proof"}
+    return tenuo_core.verify_meta(proof["warrant"], proof["signature"], worker.REPORT_TOOL,
+                                  argument_json(body), proof["ts"])
 
 
 FAKE_CLAUDE = """#!/bin/sh
