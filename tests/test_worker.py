@@ -211,3 +211,31 @@ def test_progress_line():
     assert worker.progress_line({"tool": "Edit", "decision": "allow", "args": {"path": "/a/b/calc.py"}}) \
         == "✅ Edit calc.py"
     assert worker.progress_line({"tool": "TodoWrite", "decision": "allow"}) is None
+
+
+def test_a_job_without_commits_leaves_no_branch(tmp_path, monkeypatch):
+    mine, hermes, grant, share = _setup(tmp_path, monkeypatch)
+    repo = share / "repo"
+    _git(tmp_path, "init", "-q", "--bare", str(tmp_path / "remote.git"))
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a").write_text("a")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "init")
+    _git(repo, "remote", "add", "origin", str(tmp_path / "remote.git"))
+    claude = tmp_path / "claude"
+    claude.write_text("#!/bin/sh\necho '{\"result\": \"nothing to do\"}'\n")
+    claude.chmod(0o755)
+
+    class FakeHermes:
+        key = mine
+        def progress(self, *a): pass
+        def result(self, *a): pass
+
+    job = _narrow(grant, hermes, mine.public_key, folder="repo", branch="claude/x")
+    report = worker.handle(FakeHermes(), job, name="mac", claude=str(claude))
+    assert report["ok"] and not report["pushed"]
+    assert "claude/x" not in _git(repo, "branch")
+    # The same name works again, and an existing branch is refused clearly.
+    _git(repo, "branch", "claude/x")
+    report = worker.handle(FakeHermes(), job, name="mac", claude=str(claude))
+    assert not report["ok"] and "already has a branch" in report["error"]

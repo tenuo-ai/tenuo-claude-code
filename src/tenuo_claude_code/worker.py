@@ -327,6 +327,8 @@ def handle(hermes: Hermes, job: dict, *, name: str, claude: str | None) -> dict:
                 raise ValueError(f"{folder.name} has uncommitted changes; commit or stash them first")
             base = git(folder, "rev-parse", "HEAD")
             start_branch = git(folder, "rev-parse", "--abbrev-ref", "HEAD")
+            if git(folder, "branch", "--list", branch):
+                raise ValueError(f"{folder.name} already has a branch {branch}; ask for another name")
             git(folder, "switch", "-c", branch)
     except Exception as exc:  # noqa: BLE001
         report = sign_report(key, {"ok": False, "error": f"refused by the machine: {exc}", "report": "summary"},
@@ -375,6 +377,9 @@ def handle(hermes: Hermes, job: dict, *, name: str, claude: str | None) -> dict:
         finally:
             if start_branch and start_branch != "HEAD":
                 git(folder, "switch", start_branch, check=False)
+                if not commits:
+                    # Nothing to keep: remove the branch this job created, so the name can be reused.
+                    git(folder, "branch", "-D", branch, check=False)
         rows, chain_ok = run.read_receipts(state, public_key_b64(key))
         summary["receipts"] = {**(summary.get("receipts") or {}), "count": len(rows),
                                "head": rows[-1]["hash"] if rows else None, "chain_ok": chain_ok}
