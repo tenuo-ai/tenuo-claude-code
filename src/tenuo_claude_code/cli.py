@@ -5198,6 +5198,10 @@ COMMANDS = {
 
 
 def main() -> None:
+    # `run` needs no governed project: the grant it is handed is the policy.
+    if sys.argv[1:2] == ["run"]:
+        from tenuo_claude_code import run as _run
+        sys.exit(_run.main(sys.argv[2:]))
     parser = argparse.ArgumentParser(prog=CLI_COMMAND, description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version",
