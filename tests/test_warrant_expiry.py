@@ -300,17 +300,66 @@ def test_renewal_uses_the_lifetime_that_was_applied_not_an_edited_one(local, mon
     assert current().ttl_seconds() <= 120
 
 
+def subagent_project(local, **role):
+    cfg = {**local, "subagents": {"researcher": {"tools": ["Read"], **role}}}
+    cli.remint_session(cfg)             # records the session lifetime in state.json
+    cli.refresh_subwarrants(cfg)        # records the role's own lifetime
+    return cfg
+
+
+def renewed_child():
+    return decode_warrant_stack_base64(cli.subwarrant_path("researcher").read_text())
+
+
 def test_a_short_lived_subagent_warrant_stays_short_lived(local, monkeypatch):
-    cfg = {**local, "subagents": {"researcher": {"tools": ["Read"], "ttl_seconds": 60}}}
-    cli.remint_session(cfg)
-    cli.refresh_subwarrants(cfg)
-    path = cli.subwarrant_path("researcher")
-    assert decode_warrant_stack_base64(path.read_text())[-1].ttl_seconds() <= 60
+    cfg = subagent_project(local, ttl_seconds=60)
+    assert renewed_child()[-1].ttl_seconds() <= 60
     due(monkeypatch)
     assert cli.renew_session_warrant_if_due(cfg) is not None
-    parent, child = decode_warrant_stack_base64(path.read_text())
+    parent, child = renewed_child()
     assert parent.ttl_seconds() > 3000
-    assert 50 <= child.ttl_seconds() <= 61
+    assert 50 <= child.ttl_seconds() <= 60
+
+
+def test_a_subagent_lifetime_edited_but_not_applied_is_ignored(local, monkeypatch):
+    cfg = subagent_project(local, ttl_seconds=60)
+    edited = {**cfg, "subagents": {"researcher": {"tools": ["Read"], "ttl_seconds": 3000}}}
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due(edited) is not None
+    assert renewed_child()[-1].ttl_seconds() <= 60
+
+
+def test_renewal_never_lengthens_a_child_when_lifetimes_were_not_recorded(local, monkeypatch):
+    """A project last refreshed by 0.7.0 has no lifetimes in state.json. A 60-second
+    role under a 600-second session must not come back as a long-lived one."""
+    cfg = subagent_project({**local, "ttl_seconds": 600}, ttl_seconds=60)
+    state = json.loads(cli.STATE_JSON.read_text())
+    state.pop("warrant_ttl_seconds"); state.pop("subwarrant_ttl_seconds")
+    cli.STATE_JSON.write_text(json.dumps(state))
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due(cfg) is not None
+    parent, child = renewed_child()
+    assert 500 <= parent.ttl_seconds() <= 600
+    assert child.ttl_seconds() <= 60
+
+
+def test_a_child_never_outlives_its_renewed_parent(local, monkeypatch):
+    cfg = subagent_project(local)       # the role follows its parent
+    state = json.loads(cli.STATE_JSON.read_text())
+    state["warrant_ttl_seconds"] = 120
+    state["subwarrant_ttl_seconds"] = {"researcher": 5000}
+    cli.STATE_JSON.write_text(json.dumps(state))
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due(cfg) is not None
+    parent, child = renewed_child()
+    assert child.ttl_seconds() <= parent.ttl_seconds() <= 120
+
+
+def test_a_cloud_warrant_is_not_flagged_as_expiring_when_fresh(local, monkeypatch):
+    monkeypatch.setattr(cli, "use_cloud_trigger", lambda cfg: True)
+    assert cli.warrant_expiry_note(local) == ("ok", "")
+    monkeypatch.setattr(cli, "_warrant_seconds_left", lambda warrant: 600.0)
+    assert cli.warrant_expiry_note(local)[0] == "soon"
 
 
 def test_secret_replacement_is_safe_under_concurrent_writers(local):

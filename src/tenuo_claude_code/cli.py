@@ -816,6 +816,18 @@ def load_config() -> dict:
     return cfg
 
 
+def _record_subwarrant_ttls(ttls: dict) -> None:
+    """Remember each subagent warrant's own lifetime (None = its parent's), so
+    automatic renewal can reuse it instead of guessing."""
+    try:
+        st = json.loads(STATE_JSON.read_text()) if STATE_JSON.exists() else None
+        if isinstance(st, dict):
+            st["subwarrant_ttl_seconds"] = ttls
+            STATE_JSON.write_text(json.dumps(st, indent=2))
+    except Exception:
+        pass
+
+
 def subwarrant_path(role: str) -> Path:
     return STATE / f"subwarrant_{slug(role)}.b64"
 
@@ -838,6 +850,7 @@ def refresh_subwarrants(cfg: dict) -> None:
             stale.unlink()
         roles = subagent_roles(cfg)
         if not roles:
+            _record_subwarrant_ttls({})
             return
         from tenuo import SigningKey, Warrant
         from tenuo.exceptions import UntrustedRoot
@@ -887,6 +900,8 @@ def refresh_subwarrants(cfg: dict) -> None:
             # presented as a WarrantStack so the authorizer can verify to the root.
             write_secret(subwarrant_path(role),
                          encode_warrant_stack([parent, child]))
+        _record_subwarrant_ttls({slug(role): (int(rc["ttl_seconds"]) if (rc or {}).get("ttl_seconds") else None)
+                                 for role, rc in roles.items()})
 
 
 def _parse_env_value(raw: str) -> str:
@@ -2421,16 +2436,45 @@ def set_renewal_block(blocked: bool) -> None:
             marker.unlink()
 
 
-def _applied_ttl_seconds() -> int:
-    """The lifetime the last explicit mint used. Read from state, not from
-    tenuo.yaml, so an unapplied edit to `ttl_seconds` does not take effect here."""
+def _applied_ttl_seconds(cfg: dict) -> int:
+    """The lifetime the last explicit mint used.
+
+    Read from state, so an unapplied edit to `ttl_seconds` does not take effect
+    at renewal. A project last refreshed by an older version has nothing
+    recorded; there the policy's value is the best statement of what was
+    applied, and the next `refresh` records it.
+    """
     try:
         ttl = json.loads(STATE_JSON.read_text()).get("warrant_ttl_seconds")
         if isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0:
             return ttl
     except Exception:
         pass
-    return DEFAULT_SESSION_TTL_SECONDS
+    try:
+        return session_ttl_seconds(cfg)
+    except (Exception, SystemExit):
+        return DEFAULT_SESSION_TTL_SECONDS
+
+
+def _applied_subwarrant_ttl(cfg: dict, key: str) -> int | None:
+    """A subagent warrant's own lifetime, or None when it follows its parent.
+
+    Recorded at the last explicit refresh. Without a record (older state), the
+    role's `ttl_seconds` in the policy stands in, as above.
+    """
+    try:
+        recorded = json.loads(STATE_JSON.read_text()).get("subwarrant_ttl_seconds")
+    except Exception:
+        recorded = None
+    if isinstance(recorded, dict):
+        value = recorded.get(key)
+    else:
+        value = next(((rc or {}).get("ttl_seconds") for role, rc in subagent_roles(cfg).items()
+                      if slug(role) == key), None)
+    try:
+        return int(value) if value and int(value) > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _locally_revoked(warrant_id: str) -> bool:
@@ -2509,7 +2553,7 @@ def renew_session_warrant_if_due(cfg: dict) -> str | None:
     keeps denying, as before.
     """
     try:
-        ttl = _applied_ttl_seconds()
+        ttl = _applied_ttl_seconds(cfg)
         first_look = _renewal_candidate(cfg)
         if first_look is None or not _renewal_due(first_look[0], ttl):
             return None
@@ -2520,7 +2564,7 @@ def renew_session_warrant_if_due(cfg: dict) -> str | None:
             # Look again under the lock: another renewal, or a `refresh` that
             # narrowed the policy or changed the lifetime, may have replaced the
             # warrant meanwhile. Everything used from here on is read now.
-            ttl = _applied_ttl_seconds()
+            ttl = _applied_ttl_seconds(cfg)
             candidate = _renewal_candidate(cfg)
             if candidate is None or not _renewal_due(candidate[0], ttl):
                 return None
@@ -2534,8 +2578,8 @@ def renew_session_warrant_if_due(cfg: dict) -> str | None:
                 return None
 
             # Subagent warrants chain to the session warrant: re-derive each one
-            # that exists from the new parent, keeping its tool set and, when it
-            # was shorter-lived than its parent, the same head start on expiry.
+            # that exists from the new parent, keeping its tool set and its own
+            # lifetime as last applied. A child never outlives its parent.
             children: list[tuple[Path, str]] = []
             for path in sorted(STATE.glob("subwarrant_*.b64")):
                 old_stack = decode_warrant_stack_base64(path.read_text())
@@ -2543,10 +2587,11 @@ def renew_session_warrant_if_due(cfg: dict) -> str | None:
                 child_builder = new.attenuate_builder()
                 child_builder.inherit_all()
                 child_builder.retain_tools(list(old_child.tools))
-                child_builder.with_intent("subagent:" + path.stem[len("subwarrant_"):])
-                shorter_by = _warrant_expiry_time(old_stack[0]) - _warrant_expiry_time(old_child)
-                if shorter_by >= 1:
-                    child_builder.with_ttl(max(1, int(ttl - shorter_by)))
+                key = path.stem[len("subwarrant_"):]
+                child_builder.with_intent("subagent:" + key)
+                child_ttl = _applied_subwarrant_ttl(cfg, key)
+                if child_ttl:
+                    child_builder.with_ttl(min(child_ttl, ttl))
                 child = child_builder.delegate(holder)
                 if _capability_signature(child) != _capability_signature(old_child):
                     return None
@@ -4060,9 +4105,9 @@ def warrant_expiry_note(cfg: dict) -> tuple[str, str]:
             return ("ok", "expired; renews on the next tool call") if renews else ("expired", "")
         if renews:
             return "ok", "renews automatically"
-        window = 24 * 3600.0
-        if not use_cloud_trigger(cfg):
-            window = min(window, session_ttl_seconds(cfg) / 4)
+        # The policy's lifetime is also what a Cloud trigger issues with, so the
+        # same window applies there: a healthy one-hour warrant is not "soon".
+        window = min(24 * 3600.0, session_ttl_seconds(cfg) / 4)
         if _warrant_seconds_left(w) <= window:
             return "soon", f"expires soon: {w.expires_at()}"
     except Exception:
