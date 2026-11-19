@@ -43,9 +43,9 @@ Ask in your own words; Claude starts the matching skill and asks before it insta
 
 - In the project: `tenuo.yaml` (your policy), PreToolUse and PostToolUse hook entries in `.claude/settings.json`, and an MCP proxy entry in `.mcp.json` when the policy limits an MCP server.
 - Outside the project: keys, the current warrant and the receipt log under `~/.tenuo/projects/<project>/`, and one marker file in the plugin's data directory so the setup hint is shown once.
-- The receipt log holds, for each tool call, the tool name, its arguments, the decision and the reason, and the first 240 characters of the tool's result. It stays on your machine. `tenuo-claude uninstall` deletes it.
+- The receipt log holds, for each tool call, the tool name, its arguments, the decision and the reason, and the first 240 characters of the tool's result. Tenuo keeps it on your machine and does not upload it in local mode. `tenuo-claude uninstall` deletes it.
 
-**Sends.** In local mode, nothing: the authorizer listens on `127.0.0.1` and no tool-call data leaves the machine. Cloud mode is separate and opt-in (`tenuo-claude bootstrap --cloud` with credentials for your own Tenuo Cloud tenant); it then sends receipts to that tenant and fetches warrants from it. See the [privacy policy](https://tenuo.ai/privacy).
+**Sends.** In local mode Tenuo sends nothing: the authorizer listens on `127.0.0.1`, and neither the hooks nor the CLI transmit tool-call data anywhere. One thing does reach your model provider, through Claude itself: when you run `/tenuo:status` or `/tenuo:audit`, or ask Claude for them, their output is shown to Claude and becomes part of your conversation like any other tool output. For audit that includes recorded tool names, arguments, decisions and result previews. To read the record without Claude, run `tenuo-claude audit --verify` in a terminal. Cloud mode is separate and opt-in (`tenuo-claude bootstrap --cloud` with credentials for your own Tenuo Cloud tenant); it then sends receipts to that tenant and fetches warrants from it. See the [privacy policy](https://tenuo.ai/privacy).
 
 **Changes to Claude Code settings.** Setup adds the two hook entries above to the project's `.claude/settings.json`. It does not change permission modes or allow rules. `tenuo-claude disable` removes the entries.
 
