@@ -590,7 +590,20 @@ def test_a_relative_state_directory_is_not_setup(tmp_path, env):
     (planted / "state.json").write_text("{}")
     relative = {**env, "TENUO_STATE_DIR": "st", "CLAUDE_PROJECT_DIR": str(proj)}
     assert tp.user_state_dir(proj, relative) is None
-    assert tp.decide({"cwd": str(proj)}, relative)[0] == tp.NOOP_STATE_IN_PROJECT
+    assert tp.decide({"cwd": str(proj)}, relative)[0] == tp.NOOP_RELATIVE_STATE_DIR
+    # It is its own problem with its own fix, wherever the path happens to lead:
+    # a sibling directory outside the project gets the same answer.
+    sibling = tmp_path / "external-state"
+    sibling.mkdir()
+    (sibling / "state.json").write_text("{}")
+    outward = {**relative, "TENUO_STATE_DIR": "../external-state"}
+    assert tp.decide({"cwd": str(proj)}, outward)[0] == tp.NOOP_RELATIVE_STATE_DIR
+    line = tp.status_line({"cwd": str(proj)}, outward)
+    assert "relative path (../external-state)" in line and "absolute path" in line
+    assert "refresh" not in line and "/tenuo:setup" not in line
+    for mode in ("pre", "post"):
+        proc = run_hook(mode, {**PRE_EVENT, "cwd": str(proj)}, outward, proj)
+        assert proc.returncode == 0 and proc.stdout == b""
     # The same directory named from somewhere else, where the relative path
     # happens to exist outside the project.
     elsewhere = tmp_path / "elsewhere"
