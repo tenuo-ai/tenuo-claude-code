@@ -646,6 +646,37 @@ def test_run_looks_past_a_project_copy_on_path_to_the_users_own(tmp_path, env):
     assert mine.exists() and not ran.exists()
 
 
+def test_a_relative_cli_path_is_pinned_before_it_is_checked_or_run(tmp_path, env):
+    """The CLI runs with the project as its working directory. A relative PATH
+    entry or override must not be checked in the shell's directory and then
+    run from the project's."""
+    proj = make_project(tmp_path / "cloned", state=False)
+    ran = tmp_path / "ran"
+    fake_cli(proj / "bin" / "tenuo-claude", f"echo ran > {ran}")       # the project's file
+    shell_dir = tmp_path / "shell"
+    mine = tmp_path / "mine"
+    own = fake_cli(shell_dir / "bin" / "tenuo-claude", f"echo mine > {mine}")
+    session = {**env, "CLAUDE_PROJECT_DIR": str(proj)}
+
+    by_path = run_skill_command(["status"], {**session, "PATH": f"bin:{env['PATH']}"}, shell_dir)
+    assert f"CLI: {own}" in by_path.stdout
+    assert mine.exists() and not ran.exists()
+
+    mine.unlink()
+    by_override = run_skill_command(
+        ["status"], {**session, "TENUO_CLAUDE_BIN": "bin/tenuo-claude"}, shell_dir)
+    assert f"CLI: {own}" in by_override.stdout
+    assert mine.exists() and not ran.exists()
+
+    # Run from inside the project, the same relative spellings name the
+    # project's file, and that one is refused before setup.
+    mine.unlink()
+    inside = run_skill_command(["status"], {**session, "PATH": f"bin:{env['PATH']}"}, proj)
+    assert "inside this project" in inside.stdout
+    assert not ran.exists() and not mine.exists()
+    assert tp.find_cli(None, {"PATH": "relative-dir", "HOME": str(tmp_path)}) is None
+
+
 def test_inside_judges_by_location_and_by_target(tmp_path):
     root = tmp_path / "proj"
     (root / "sub").mkdir(parents=True)

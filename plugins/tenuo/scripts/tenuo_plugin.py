@@ -222,11 +222,19 @@ def find_cli(root: Path | None, env: dict, skip=None) -> str | None:
 
     ``skip`` is an optional test for candidates that must not be used, wherever
     they were found (the override and ``PATH`` included).
+
+    Always returns an absolute path. The CLI is started with the project as its
+    working directory, so a relative path would be checked against one
+    directory here and then run from another.
     """
+    def absolute(value) -> Path:
+        return Path(os.path.abspath(os.path.expanduser(str(value))))
+
     override = (env.get("TENUO_CLAUDE_BIN") or "").strip()
     if override:
-        usable = _executable(Path(override)) and not (skip and skip(Path(override)))
-        return override if usable else None
+        pinned = absolute(override)
+        usable = _executable(pinned) and not (skip and skip(pinned))
+        return str(pinned) if usable else None
     candidates: list[Path] = []
     if root is not None:
         candidates += [root / ".venv" / "bin" / n for n in CLI_NAMES]
@@ -247,7 +255,7 @@ def find_cli(root: Path | None, env: dict, skip=None) -> str | None:
             home / ".local" / "share" / "uv" / "tools" / PYPI_PACKAGE / "bin" / CLI_NAMES[0],
             home / ".local" / "pipx" / "venvs" / PYPI_PACKAGE / "bin" / CLI_NAMES[0],
         ]
-    for cand in candidates:
+    for cand in map(absolute, candidates):
         if skip is not None and skip(cand):
             continue
         if _executable(cand):
