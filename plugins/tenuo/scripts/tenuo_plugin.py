@@ -65,8 +65,10 @@ INSTALL_HINT = f"uv tool install {PYPI_PACKAGE}"
 SETUP_HINT = "/tenuo:setup"
 # The only commands `run` passes to the CLI. All of them read; none writes
 # policy, wiring or state, starts or stops the authorizer, or installs anything.
-# `verify` is not among them: its self-test writes probe files into the project.
-SKILL_COMMANDS = ("check", "status", "audit", "state-dir", "--version")
+# `verify` and `check` are not among them: the self-test writes probe files
+# into the project, and the preflight runs the project's launcher script when
+# one exists.
+SKILL_COMMANDS = ("status", "audit", "state-dir", "--version")
 # Flags `run` lets through, per command.
 SKILL_FLAGS = {"audit": ("--verify", "--tail")}
 HINT_MARKER = "setup-hint-shown"
@@ -428,6 +430,20 @@ def run_session_start(raw: bytes, env: dict) -> int:
     return 0
 
 
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _set_up_by_this_user(root: Path, env: dict) -> bool:
+    """True when the project's state directory exists outside the project."""
+    state = project_state_dir(root, env)
+    return state.is_dir() and not _inside(state, root)
+
+
 def run_cli(args: list[str], env: dict) -> int:
     """Run ``tenuo-claude <args>`` in the governed project (for plugin skills).
 
@@ -474,6 +490,18 @@ def run_cli(args: list[str], env: dict) -> int:
         return 0
     print(f"Plugin: {status_line({}, env)}")
     print(f"Project: {root}")
+    # A skill runs this without asking. Until the user has set the project up on
+    # this machine (state under their home directory, which a repository cannot
+    # ship), a copy of the CLI inside the project is somebody else's file: say
+    # where it is, but do not run it.
+    if cli is not None and _inside(Path(cli), root) and not _set_up_by_this_user(root, env):
+        user_cli = find_cli(None, env)
+        if user_cli is None:
+            print(f"The only tenuo-claude found is inside this project ({cli}). The plugin "
+                  "does not run a project's own copy before the project is set up on this "
+                  f"machine. Run `{cli} {' '.join(args)}` yourself, or {SETUP_HINT}.")
+            return 0
+        cli = user_cli
     if cli is None:
         # The project exists; only the inspection is unavailable. Governance
         # state is whatever the Plugin line above says.

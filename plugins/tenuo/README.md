@@ -32,7 +32,7 @@ Ask in your own words; Claude starts the matching skill and asks before it insta
 
 ## What the plugin runs, installs, writes and sends
 
-**Runs.** Three hooks (PreToolUse, PostToolUse, SessionStart) run `scripts/tenuo-hook`, a shell script that starts `scripts/tenuo_plugin.py`, a standard-library Python launcher. On every tool call the launcher looks for a `tenuo.yaml` in the project. With none it exits and does nothing. In a governed project it passes the call to the `tenuo-claude` CLI, which asks a Tenuo authorizer running on this machine whether the call fits your policy. The launcher makes no network calls. The three skills run the same launcher with a fixed set of read-only commands (`check`, `status`, `audit`, `state-dir`, `--version`); it refuses anything else.
+**Runs.** Three hooks (PreToolUse, PostToolUse, SessionStart) run `scripts/tenuo-hook`, a shell script that starts `scripts/tenuo_plugin.py`, a standard-library Python launcher. On every tool call the launcher looks for a `tenuo.yaml` in the project. With none it exits and does nothing. In a governed project it passes the call to the `tenuo-claude` CLI, which asks a Tenuo authorizer running on this machine whether the call fits your policy. The launcher makes no network calls. The three skills run the same launcher with a fixed set of read-only commands (`status`, `audit`, `state-dir`, `--version`); it refuses anything else, and it does not run a copy of the CLI that lives inside a project you have not set up yet.
 
 **Installs, during `/tenuo:setup` and only after you approve each command.**
 
@@ -51,7 +51,7 @@ Ask in your own words; Claude starts the matching skill and asks before it insta
 
 ## Troubleshooting and removal
 
-- `/tenuo:status` names the failing check and its fix. More cases: [docs/TROUBLESHOOTING.md](https://github.com/tenuo-ai/tenuo-claude-code/blob/main/docs/TROUBLESHOOTING.md).
+- `/tenuo:status` shows what is wrong; `tenuo-claude check` in a terminal runs the full preflight. More cases: [docs/TROUBLESHOOTING.md](https://github.com/tenuo-ai/tenuo-claude-code/blob/main/docs/TROUBLESHOOTING.md).
 - A governed project whose `tenuo-claude` CLI is missing denies tool calls until the CLI is back or you run `tenuo-claude disable`. This is deliberate: a broken setup must not fail open.
 - `tenuo-claude disable` turns governance off for a project; `tenuo-claude uninstall` also deletes its keys and receipts. Removing the plugin alone does not remove hook entries the CLI wrote.
 - Questions and bugs: [GitHub issues](https://github.com/tenuo-ai/tenuo-claude-code/issues). Security reports: [SECURITY.md](https://github.com/tenuo-ai/tenuo-claude-code/blob/main/SECURITY.md).

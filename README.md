@@ -148,7 +148,7 @@ What the plugin adds:
 
 - **Hooks that stay out of the way.** PreToolUse, PostToolUse, and SessionStart hooks run in every project, but they do nothing unless the project has opted in. Repos without Tenuo keep Claude Code's normal permissions.
 - **A fail-closed safety net.** If a project is governed but its `.claude/settings.json` wiring is missing (a fresh clone, a regenerated settings file), the plugin routes each call to `tenuo-claude _hook` itself. If the CLI can't be found or crashes, the call is denied with a message saying how to fix it.
-- **A one-line status at session start** in governed projects (other projects see the setup hint once, then nothing), plus the three skills above. `/tenuo:status` runs `tenuo-claude check` and `/tenuo:audit` runs `tenuo-claude audit --verify`. The skills can only run read-only commands through the plugin; anything that changes your setup is an ordinary command you approve.
+- **A one-line status at session start** in governed projects (other projects see the setup hint once, then nothing), plus the three skills above. `/tenuo:status` runs `tenuo-claude status` and `/tenuo:audit` runs `tenuo-claude audit --verify`. The skills can only run read-only commands through the plugin; anything that changes your setup is an ordinary command you approve.
 
 How the plugin decides, per tool call:
 

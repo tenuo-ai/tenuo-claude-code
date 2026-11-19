@@ -469,32 +469,37 @@ def run_skill_command(args: list[str], env: dict, cwd: Path) -> subprocess.Compl
                           capture_output=True, text=True, cwd=str(cwd), env=env, timeout=60)
 
 
-def test_run_exits_zero_and_reports_the_outcome_in_its_output(tmp_path, env):
+def user_cli(home: Path, body: str) -> Path:
+    """A fake `tenuo-claude` installed for the user, outside any project."""
+    return fake_cli(home / ".local" / "bin" / "tenuo-claude", body)
+
+
+def test_run_exits_zero_and_reports_the_outcome_in_its_output(tmp_path, env, home):
     """Claude Code drops a skill whose injected command exits non-zero, so the
     skill runner must exit 0 and say what happened in the text instead."""
     proj = make_project(tmp_path / "p")
-    cli_path = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", "echo checked; exit 3")
-    proc = run_skill_command(["check"], env, proj)
+    user_cli(home, "echo checked; exit 3")
+    proc = run_skill_command(["status"], env, proj)
     assert proc.returncode == 0
     assert "checked" in proc.stdout
     assert proc.stdout.rstrip().endswith("[tenuo-claude exited 3]")
 
-    fake_cli(cli_path, "echo checked")
-    proc = run_skill_command(["check"], env, proj)
+    user_cli(home, "echo checked")
+    proc = run_skill_command(["status"], env, proj)
     assert proc.returncode == 0 and "exited" not in proc.stdout
 
 
 def test_run_without_policy_says_tenuo_is_not_set_up(tmp_path, env, home):
     empty = tmp_path / "empty"
     empty.mkdir()
-    proc = run_skill_command(["check"], env, empty)
+    proc = run_skill_command(["status"], env, empty)
     assert proc.returncode == 0
     assert "Tenuo is not set up here" in proc.stdout and "/tenuo:setup" in proc.stdout
     assert "CLI: not installed" in proc.stdout
     assert f"Project: {empty.resolve()}" in proc.stdout or f"Project: {empty}" in proc.stdout
     assert "unfinished" not in proc.stdout
 
-    cli_path = fake_cli(home / ".local" / "bin" / "tenuo-claude", "exit 0")
+    cli_path = user_cli(home, "exit 0")
     proc = run_skill_command(["--version"], env, empty)
     assert "Tenuo is not set up here" in proc.stdout
     assert f"CLI: found at {cli_path}" in proc.stdout
@@ -535,15 +540,16 @@ def test_run_flags_a_cloud_overlay_without_a_policy(tmp_path, env, overlay):
 
 @pytest.mark.parametrize("args", [
     ["disable"], ["uninstall", "--yes"], ["bootstrap", "--native"], ["init"], ["up"],
-    ["refresh"], ["revoke"], ["verify"], ["verify", "--deep"],
+    ["refresh"], ["revoke"], ["check"], ["verify"], ["verify", "--deep"],
     ["audit", "--verify", "--oops"], [],
 ])
-def test_run_refuses_anything_that_is_not_a_read_only_command(tmp_path, env, args):
+def test_run_refuses_anything_that_is_not_a_read_only_command(tmp_path, env, home, args):
     """The skills pre-approve this script, so it must not be a way to change
-    governance without the user seeing the command."""
+    governance, or to run a project's own scripts, without the user seeing the
+    command. `check` and `verify` are refused for the second reason."""
     proj = make_project(tmp_path / "p")
     called = tmp_path / "called"
-    fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f"echo ran > {called}")
+    user_cli(home, f"echo ran > {called}")
     proc = run_skill_command(args, env, proj)
     assert proc.returncode == 0
     assert "read-only commands only" in proc.stdout
@@ -551,18 +557,45 @@ def test_run_refuses_anything_that_is_not_a_read_only_command(tmp_path, env, arg
 
 
 @pytest.mark.parametrize("args", [
-    ["check"], ["status"], ["state-dir"], ["--version"],
+    ["status"], ["state-dir"], ["--version"],
     ["audit"], ["audit", "--verify"], ["audit", "--tail", "20"],
 ])
-def test_run_passes_read_only_commands_through(tmp_path, env, args):
+def test_run_passes_read_only_commands_through(tmp_path, env, home, args):
     proj = make_project(tmp_path / "p")
     seen = tmp_path / "seen"
-    cli_path = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f'echo "$@" > {seen}')
+    cli_path = user_cli(home, f'echo "$@" > {seen}')
     proc = run_skill_command(args, env, proj)
     assert proc.returncode == 0
     assert f"CLI: {cli_path}" in proc.stdout
     assert f"Project: {proj.resolve()}" in proc.stdout
     assert seen.read_text().split() == args
+
+
+def test_run_does_not_execute_a_project_copy_of_the_cli_before_setup(tmp_path, env, home):
+    """A repository can ship a policy, a `.state` folder and a `.venv`. None of
+    that makes its `tenuo-claude` something to run without asking."""
+    proj = make_project(tmp_path / "cloned")          # tenuo.yaml + in-project .state
+    ran = tmp_path / "ran"
+    local = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f"echo ran > {ran}")
+    proc = run_skill_command(["status"], env, proj)
+    assert proc.returncode == 0
+    assert not ran.exists()
+    assert f"inside this project ({local})" in proc.stdout
+
+    # With a CLI of the user's own, that one runs instead.
+    mine = tmp_path / "mine"
+    cli_path = user_cli(home, f"echo mine > {mine}")
+    proc = run_skill_command(["status"], env, proj)
+    assert f"CLI: {cli_path}" in proc.stdout
+    assert mine.exists() and not ran.exists()
+
+    # Once the user has set the project up here (state under their home), the
+    # project's own environment is theirs, as it is for the hooks.
+    cli_path.unlink()
+    (proj / ".state" / "state.json").unlink()
+    tp.project_state_dir(proj, env).mkdir(parents=True)
+    proc = run_skill_command(["status"], env, proj)
+    assert f"CLI: {local}" in proc.stdout and ran.exists()
 
 
 def test_run_keeps_inspection_failures_apart_from_no_policy(tmp_path, env):
@@ -577,7 +610,7 @@ def test_run_keeps_inspection_failures_apart_from_no_policy(tmp_path, env):
 
     empty = tmp_path / "empty"
     empty.mkdir()
-    proc = run_skill_command(["check"], {**env, "TENUO_PROJECT_DIR": str(empty)}, empty)
+    proc = run_skill_command(["status"], {**env, "TENUO_PROJECT_DIR": str(empty)}, empty)
     assert proc.returncode == 0
     assert "denied until this is fixed" in proc.stdout and "has no tenuo.yaml" in proc.stdout
     assert "not set up here" not in proc.stdout
