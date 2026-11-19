@@ -393,6 +393,27 @@ def test_e2e_session_start_one_line_never_blocks(tmp_path, env, setup, needle):
     assert needle in msg and "\n" not in msg
 
 
+def test_session_start_hint_is_shown_once_in_unrelated_projects(tmp_path, env):
+    """A project that never asked for Tenuo hears about setup once, then nothing."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    data = tmp_path / "plugin-data"
+    with_data = {**env, "CLAUDE_PROJECT_DIR": str(repo), "CLAUDE_PLUGIN_DATA": str(data)}
+    event = {"hook_event_name": "SessionStart", "cwd": str(repo)}
+    first = run_hook("session-start", event, with_data, repo)
+    assert first.returncode == 0
+    assert "/tenuo:setup" in json.loads(first.stdout)["systemMessage"]
+    for _ in range(2):
+        again = run_hook("session-start", event, with_data, repo)
+        assert again.returncode == 0 and again.stdout == b""
+    # A governed project always gets its status line.
+    proj = make_project(tmp_path / "p")
+    fake_cli(proj / ".venv" / "bin" / "tenuo-claude", "exit 0")
+    governed = run_hook("session-start", {**event, "cwd": str(proj)},
+                        {**with_data, "CLAUDE_PROJECT_DIR": str(proj)}, proj)
+    assert "via the Tenuo plugin" in json.loads(governed.stdout)["systemMessage"]
+
+
 def test_e2e_no_python_fallback(tmp_path, env):
     """Without a usable python3 the sh fallback still fails closed, but only
     in an opted-in project."""
@@ -448,32 +469,227 @@ def run_skill_command(args: list[str], env: dict, cwd: Path) -> subprocess.Compl
                           capture_output=True, text=True, cwd=str(cwd), env=env, timeout=60)
 
 
-def test_run_exits_zero_and_reports_the_outcome_in_its_output(tmp_path, env):
+def user_cli(home: Path, body: str) -> Path:
+    """A fake `tenuo-claude` installed for the user, outside any project."""
+    return fake_cli(home / ".local" / "bin" / "tenuo-claude", body)
+
+
+def test_run_exits_zero_and_reports_the_outcome_in_its_output(tmp_path, env, home):
     """Claude Code drops a skill whose injected command exits non-zero, so the
     skill runner must exit 0 and say what happened in the text instead."""
     proj = make_project(tmp_path / "p")
-    cli_path = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", "echo checked; exit 3")
-    proc = run_skill_command(["check"], env, proj)
+    user_cli(home, "echo checked; exit 3")
+    proc = run_skill_command(["status"], env, proj)
     assert proc.returncode == 0
     assert "checked" in proc.stdout
     assert proc.stdout.rstrip().endswith("[tenuo-claude exited 3]")
 
-    fake_cli(cli_path, "echo checked")
-    proc = run_skill_command(["check"], env, proj)
+    user_cli(home, "echo checked")
+    proc = run_skill_command(["status"], env, proj)
     assert proc.returncode == 0 and "exited" not in proc.stdout
 
 
 def test_run_without_policy_says_tenuo_is_not_set_up(tmp_path, env, home):
     empty = tmp_path / "empty"
     empty.mkdir()
-    proc = run_skill_command(["check"], env, empty)
+    proc = run_skill_command(["status"], env, empty)
     assert proc.returncode == 0
     assert "Tenuo is not set up here" in proc.stdout and "/tenuo:setup" in proc.stdout
     assert "CLI: not installed" in proc.stdout
+    assert f"Project: {empty.resolve()}" in proc.stdout or f"Project: {empty}" in proc.stdout
+    assert "unfinished" not in proc.stdout
 
-    fake_cli(home / ".local" / "bin" / "tenuo-claude", "exit 0")
-    proc = run_skill_command(["check"], env, empty)
-    assert "Tenuo is not set up here" in proc.stdout and "CLI: found" in proc.stdout
+    cli_path = user_cli(home, "exit 0")
+    proc = run_skill_command(["--version"], env, empty)
+    assert "Tenuo is not set up here" in proc.stdout
+    assert f"CLI: found at {cli_path}" in proc.stdout
+
+    # Cloud credentials without a policy are an unfinished setup, not a blank slate.
+    (empty / ".state").mkdir()
+    (empty / ".state" / "cloud.env").write_text("x\n")
+    proc = run_skill_command(["status"], env, empty)
+    assert "Found Cloud credentials" in proc.stdout and "unfinished Cloud setup" in proc.stdout
+
+
+def test_run_finds_a_cli_in_the_project_virtualenv_before_a_policy_exists(tmp_path, env):
+    """Setup trusts this line. A CLI that is only in the project's .venv must be
+    reported, or setup installs a second one."""
+    proj = tmp_path / "fresh"
+    proj.mkdir()
+    cli_path = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", "exit 0")
+    by_cwd = run_skill_command(["--version"], env, proj)
+    assert f"CLI: found at {cli_path}" in by_cwd.stdout
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    by_session = run_skill_command(["--version"], {**env, "CLAUDE_PROJECT_DIR": str(proj)}, elsewhere)
+    assert f"CLI: found at {cli_path}" in by_session.stdout
+    assert f"Project: {proj}" in by_session.stdout
+
+
+@pytest.mark.parametrize("overlay", ["tenuo.cloud.yaml", "tenuo.advanced.yaml"])
+def test_run_flags_a_cloud_overlay_without_a_policy(tmp_path, env, overlay):
+    """Local bootstrap moves Cloud overlays aside, so setup must not treat a
+    directory that has one as a blank slate."""
+    proj = tmp_path / "half"
+    proj.mkdir()
+    (proj / overlay).write_text("cloud: {}\n")
+    proc = run_skill_command(["status"], env, proj)
+    assert proc.returncode == 0
+    assert f"Found {overlay}" in proc.stdout and "unfinished Cloud setup" in proc.stdout
+
+
+@pytest.mark.parametrize("args", [
+    ["disable"], ["uninstall", "--yes"], ["bootstrap", "--native"], ["init"], ["up"],
+    ["refresh"], ["revoke"], ["check"], ["verify"], ["verify", "--deep"],
+    ["audit", "--verify", "--oops"], [],
+])
+def test_run_refuses_anything_that_is_not_a_read_only_command(tmp_path, env, home, args):
+    """The skills pre-approve this script, so it must not be a way to change
+    governance, or to run a project's own scripts, without the user seeing the
+    command. `check` and `verify` are refused for the second reason."""
+    proj = make_project(tmp_path / "p")
+    called = tmp_path / "called"
+    user_cli(home, f"echo ran > {called}")
+    proc = run_skill_command(args, env, proj)
+    assert proc.returncode == 0
+    assert "read-only commands only" in proc.stdout
+    assert not called.exists()
+
+
+@pytest.mark.parametrize("args", [
+    ["status"], ["state-dir"], ["--version"],
+    ["audit"], ["audit", "--verify"], ["audit", "--tail", "20"],
+])
+def test_run_passes_read_only_commands_through(tmp_path, env, home, args):
+    proj = make_project(tmp_path / "p")
+    seen = tmp_path / "seen"
+    cli_path = user_cli(home, f'echo "$@" > {seen}')
+    proc = run_skill_command(args, env, proj)
+    assert proc.returncode == 0
+    assert f"CLI: {cli_path}" in proc.stdout
+    assert f"Project: {proj.resolve()}" in proc.stdout
+    assert seen.read_text().split() == args
+
+
+def test_run_does_not_execute_a_project_copy_of_the_cli_before_setup(tmp_path, env, home):
+    """A repository can ship a policy, a `.state` folder and a `.venv`. None of
+    that makes its `tenuo-claude` something to run without asking."""
+    proj = make_project(tmp_path / "cloned")          # tenuo.yaml + in-project .state
+    ran = tmp_path / "ran"
+    local = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f"echo ran > {ran}")
+    proc = run_skill_command(["status"], env, proj)
+    assert proc.returncode == 0
+    assert not ran.exists()
+    assert f"inside this project ({local})" in proc.stdout
+
+    # With a CLI of the user's own, that one runs instead.
+    mine = tmp_path / "mine"
+    cli_path = user_cli(home, f"echo mine > {mine}")
+    proc = run_skill_command(["status"], env, proj)
+    assert f"CLI: {cli_path}" in proc.stdout
+    assert mine.exists() and not ran.exists()
+
+    # Once the user has set the project up here (state under their home), the
+    # project's own environment is theirs, as it is for the hooks.
+    cli_path.unlink()
+    (proj / ".state" / "state.json").unlink()
+    state = tp.project_state_dir(proj, env)
+    state.mkdir(parents=True)
+    proc = run_skill_command(["status"], env, proj)
+    assert not ran.exists(), "an empty state directory is not proof of setup"
+    (state / "state.json").write_text("{}")
+    proc = run_skill_command(["status"], env, proj)
+    assert f"CLI: {local}" in proc.stdout and ran.exists()
+
+
+def test_run_is_not_fooled_by_links_or_by_path(tmp_path, env, home):
+    """Everything here is something a repository can arrange for itself."""
+    proj = make_project(tmp_path / "cloned", state=False)
+    ran = tmp_path / "ran"
+    outside = fake_cli(tmp_path / "elsewhere" / "tool", f"echo ran > {ran}")
+
+    # 1. The project's copy is a link to a program outside the project.
+    link = proj / ".venv" / "bin" / "tenuo-claude"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside)
+    proc = run_skill_command(["status"], env, proj)
+    assert not ran.exists() and "inside this project" in proc.stdout
+
+    # 2. The project's virtualenv is on PATH, or named by the override.
+    on_path = {**env, "PATH": f"{link.parent}:{env['PATH']}"}
+    assert not ran.exists() and "inside this project" in run_skill_command(["status"], on_path, proj).stdout
+    by_override = run_skill_command(["status"], {**env, "TENUO_CLAUDE_BIN": str(link)}, proj)
+    assert not ran.exists() and "CLI:" not in by_override.stdout
+
+    # 3. The project carries a `.state` that links to a directory elsewhere, or
+    #    points TENUO_STATE_DIR back into itself.
+    real_state = tmp_path / "planted-state"
+    real_state.mkdir()
+    (real_state / "state.json").write_text("{}")
+    (proj / ".state").symlink_to(real_state)
+    assert "inside this project" in run_skill_command(["status"], env, proj).stdout
+    inward = run_skill_command(["status"], {**env, "TENUO_STATE_DIR": str(proj / ".state")}, proj)
+    assert "inside this project" in inward.stdout
+    assert not ran.exists()
+
+
+def test_run_looks_past_a_project_copy_on_path_to_the_users_own(tmp_path, env):
+    """The project's virtualenv first on PATH must not hide a CLI later on it."""
+    proj = make_project(tmp_path / "cloned", state=False)
+    ran = tmp_path / "ran"
+    local = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f"echo ran > {ran}")
+    mine = tmp_path / "mine"
+    system = fake_cli(tmp_path / "usr-local-bin" / "tenuo-claude", f"echo mine > {mine}")
+    path = f"{local.parent}:{system.parent}:{env['PATH']}"
+    proc = run_skill_command(["status"], {**env, "PATH": path}, proj)
+    assert f"CLI: {system}" in proc.stdout
+    assert mine.exists() and not ran.exists()
+
+
+def test_a_relative_cli_path_is_pinned_before_it_is_checked_or_run(tmp_path, env):
+    """The CLI runs with the project as its working directory. A relative PATH
+    entry or override must not be checked in the shell's directory and then
+    run from the project's."""
+    proj = make_project(tmp_path / "cloned", state=False)
+    ran = tmp_path / "ran"
+    fake_cli(proj / "bin" / "tenuo-claude", f"echo ran > {ran}")       # the project's file
+    shell_dir = tmp_path / "shell"
+    mine = tmp_path / "mine"
+    own = fake_cli(shell_dir / "bin" / "tenuo-claude", f"echo mine > {mine}")
+    session = {**env, "CLAUDE_PROJECT_DIR": str(proj)}
+
+    by_path = run_skill_command(["status"], {**session, "PATH": f"bin:{env['PATH']}"}, shell_dir)
+    assert f"CLI: {own}" in by_path.stdout
+    assert mine.exists() and not ran.exists()
+
+    mine.unlink()
+    by_override = run_skill_command(
+        ["status"], {**session, "TENUO_CLAUDE_BIN": "bin/tenuo-claude"}, shell_dir)
+    assert f"CLI: {own}" in by_override.stdout
+    assert mine.exists() and not ran.exists()
+
+    # Run from inside the project, the same relative spellings name the
+    # project's file, and that one is refused before setup.
+    mine.unlink()
+    inside = run_skill_command(["status"], {**session, "PATH": f"bin:{env['PATH']}"}, proj)
+    assert "inside this project" in inside.stdout
+    assert not ran.exists() and not mine.exists()
+    assert tp.find_cli(None, {"PATH": "relative-dir", "HOME": str(tmp_path)}) is None
+
+
+def test_inside_judges_by_location_and_by_target(tmp_path):
+    root = tmp_path / "proj"
+    (root / "sub").mkdir(parents=True)
+    outside = tmp_path / "out"
+    outside.mkdir()
+    (root / "link-out").symlink_to(outside)
+    (outside / "link-in").symlink_to(root / "sub")
+    assert tp._inside(root / "sub" / "x", root)
+    assert tp._inside(root / "link-out", root)           # sits inside
+    assert tp._inside(outside / "link-in", root)         # points inside
+    assert tp._inside(root / "sub" / ".." / "y", root)
+    assert not tp._inside(outside / "z", root)
+    assert not tp._inside(tmp_path / "proj-sibling", root)
 
 
 def test_run_keeps_inspection_failures_apart_from_no_policy(tmp_path, env):
@@ -488,7 +704,7 @@ def test_run_keeps_inspection_failures_apart_from_no_policy(tmp_path, env):
 
     empty = tmp_path / "empty"
     empty.mkdir()
-    proc = run_skill_command(["check"], {**env, "TENUO_PROJECT_DIR": str(empty)}, empty)
+    proc = run_skill_command(["status"], {**env, "TENUO_PROJECT_DIR": str(empty)}, empty)
     assert proc.returncode == 0
     assert "denied until this is fixed" in proc.stdout and "has no tenuo.yaml" in proc.stdout
     assert "not set up here" not in proc.stdout

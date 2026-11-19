@@ -1,7 +1,7 @@
 {
   "name": "tenuo",
   "displayName": "Tenuo",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Give Claude Code real access and keep it in bounds: limit each tool and MCP server to the repos, folders, shell commands and web domains you name, and get a signed record of every allowed and denied call. Starts in observe-only mode. Inactive until a project opts in with tenuo.yaml.",
   "author": {
     "name": "Tenuo",
@@ -10,7 +10,12 @@
   },
   "homepage": "https://tenuo.ai",
   "repository": "https://github.com/tenuo-ai/tenuo-claude-code",
+  "documentationUrl": "https://github.com/tenuo-ai/tenuo-claude-code/blob/main/plugins/tenuo/README.md",
+  "supportUrl": "https://github.com/tenuo-ai/tenuo-claude-code/issues",
+  "privacyPolicyUrl": "https://tenuo.ai/privacy",
+  "termsOfServiceUrl": "https://tenuo.ai/terms",
   "license": "Apache-2.0",
+  "icon": "./icon.png",
   "keywords": [
     "permissions",
     "guardrails",

@@ -17,70 +17,130 @@ observe-only mode) and wait for a yes before installing or writing anything.
 
 Set up Tenuo in the user's project, never in the plugin installation directory.
 Installing this plugin alone does not activate governance. Keep the existing
-plugin hooks and launcher intact: they defer to CLI-wired project hooks to avoid duplicate decisions. Do not write hook settings by hand.
+plugin hooks and launcher intact: they defer to CLI-wired project hooks to avoid
+duplicate decisions. Do not write hook settings by hand.
 
-1. Resolve the intended project directory from the session. Check whether
-   `TENUO_PROJECT_DIR` or a parent `tenuo.yaml` points elsewhere; resolve ambiguity
-   with the user before writing. Run in the resolved project directory. Once a
-   policy exists, use an absolute, shell-quoted project path in `TENUO_PROJECT_DIR` for Tenuo commands.
-2. Locate `tenuo-claude` and inspect `--version` and `bootstrap --help`. If absent,
-   use `uv tool install tenuo-claude-code` (or `pipx install tenuo-claude-code` when
-   pipx is available). If neither installer exists, explain that uv or pipx must
-   be installed first; do not claim setup succeeded. Use a persistent installation,
-   not `uvx`: hooks need a stable executable after this session. If the installed
-   CLI lacks the documented flags, upgrade with its original installer before
-   proceeding. Do not silently replace an existing development installation.
-3. Check for `tenuo.yaml` and Cloud overlays (`tenuo.cloud.yaml`,
-   `tenuo.advanced.yaml`). Resolve the state path with `tenuo-claude state-dir`
-   (honor `TENUO_STATE_DIR`); check only the existence of `cloud.env` and
-   `cloud_state.json` there and in legacy `.state/`. Never display private keys
-   or credential files.
-   - For an existing policy, preserve it and its mode. Run `tenuo-claude check`
-     and `tenuo-claude status`. Repair only the reported problem:
-     - no state directory yet (a policy that was never initialized on this
-       machine): `init`, then `up`;
-     - an initialized project with missing hook wiring, or a changed policy:
-       `refresh`. It rewrites the wiring and keeps the issuer key. Do not use
-       `init` here: it mints a new issuer key and warrant, which a running
-       authorizer does not trust. If the `Plugin:` line says the project is
-       governed via the Tenuo plugin, unwired hooks are expected; change nothing;
-     - a stopped local authorizer: `up`.
+## How to run commands here
 
-     Never use `--local`, overwrite the policy, or bootstrap an existing Cloud
-     setup. Managed deployments require their administrator's
-     service/configuration; do not replace them with a user-owned authorizer.
-   - If Cloud artifacts exist without a policy, report the incomplete setup and
-     obtain the intended policy instead of resetting to local mode.
-   - For a fresh local project, explain that setup installs a native authorizer,
-     creates `tenuo.yaml` and private state outside the project, and merges
-     project hook/MCP settings. Start in observation mode. Run:
+A fresh setup should cost the user two approvals: the install and the bootstrap.
 
-     ```sh
-     tenuo-claude bootstrap --native --pack filesystem-dev
-     ```
+- Read-only checks go through the launcher. It is pre-approved, finds the CLI
+  even when it is not on `PATH`, and runs it in the project root. Copy it
+  exactly, quotes included, and change only the last word:
 
-     Run bootstrap from the resolved project directory. For a brand-new project,
-     leave `TENUO_PROJECT_DIR` unset in the Claude session until the policy exists:
-     the plugin intentionally fails closed when it points to a missing policy.
-     The filesystem-dev pack defaults to the project directory, WebFetch to
-     api.github.com, and Bash to ls/pwd. Review the rendered policy rather than
-     promising broad shell access. Other packs require reviewing parameters first.
-4. Run `tenuo-claude check`, `tenuo-claude verify`, and `tenuo-claude status`.
-   These check on-disk state and the authorizer, not whether current hooks loaded.
+  ```sh
+  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run status
+  ```
+
+  It accepts `status`, `state-dir`, `audit` and `--version`, and refuses
+  everything else.
+- One plain command per call: no `&&`, `;`, pipes, redirects, shell variables
+  or subshells. Each of those is refused or adds an approval.
+- Do not probe the environment, the home directory or the state directory with
+  shell commands. The launcher output above already says whether a policy
+  exists and where, whether the CLI is installed and where, and whether Cloud
+  credentials exist. Never display private keys or credential files.
+- Commands that change something (`uv tool install`, `bootstrap`, `init`,
+  `refresh`, `up`) run as ordinary commands. So do `verify`, whose self-test
+  writes probe files into the project, and `check`, which runs the project's
+  launcher script when one exists. They all run with the CLI path the launcher
+  printed, so the user sees and approves each one. Tie every `tenuo-claude`
+  command that changes something to the project on the launcher's `Project:`
+  line, so it cannot act on whatever directory the shell happens to be in:
+
+  ```sh
+  TENUO_PROJECT_DIR='<Project path>' <cli-path> refresh
+  ```
+
+  That sets the variable for the one command only. Do not export it into the
+  session.
+
+## Steps
+
+1. Read the launcher output above and pick the case.
+   - **`No tenuo.yaml … Tenuo is not set up here`**: a fresh project. Go to
+     step 2. If it also says it found Cloud credentials or a Cloud overlay
+     (`tenuo.cloud.yaml`, `tenuo.advanced.yaml`), stop: report the unfinished
+     Cloud setup and ask for the intended policy. A local bootstrap would move
+     those files aside.
+   - **A `Plugin:` line that names a project root**: an existing setup. Go to
+     step 4. If that root is not the directory the user means, ask before
+     changing anything.
+   - **`tool calls will be denied until this is fixed`**: say calls are being
+     denied and give the fix the line names (for example a `TENUO_PROJECT_DIR`
+     that points at a directory without a policy). When the cause is a missing
+     CLI, you cannot install it from here, because the install would be denied
+     too: give the user `uv tool install tenuo-claude-code` to run in their own
+     terminal and ask them to run `/tenuo:setup` again afterwards. Stop there.
+   - **A `Plugin:` line and `tenuo-claude not found`**, without the denial
+     above: the project has a policy but this machine has no CLI yet. Do step 2
+     to install it, then continue at step 4.
+   - **`The only tenuo-claude found is inside this project`**: the plugin will
+     not run that copy before setup. Do step 2 to install the CLI for the user,
+     then continue at step 4.
+2. Install the CLI when the output says `not installed`:
+   `uv tool install tenuo-claude-code` (or `pipx install tenuo-claude-code`
+   when pipx is what the machine has). If neither installer exists, say that uv
+   or pipx must be installed first; do not claim setup succeeded. Use a
+   persistent install, not `uvx`: the hooks need the executable after this
+   session. Do not replace an existing development install. Then run the
+   launcher with `--version`; its output gives the CLI's full path. If that
+   path is not on `PATH`, tell the user once that `uv tool update-shell` adds it.
+3. Bootstrap a fresh local project. Say first that this installs a native
+   authorizer, creates `tenuo.yaml`, keeps private state outside the project
+   under `~/.tenuo`, and merges hook and MCP settings into the project. Then
+   run, with the CLI path from step 2 and the path on the `Project:` line:
+
+   ```sh
+   TENUO_PROJECT_DIR='<Project path>' <cli-path> bootstrap --native --pack filesystem-dev
+   ```
+
+   The filesystem-dev pack limits file access to the project directory,
+   WebFetch to api.github.com, and the shell to `ls` and `pwd`. Describe the
+   rendered policy as it is; do not promise broad shell access. Other packs
+   need their parameters reviewed first. Continue at step 5.
+4. Existing setup: preserve the policy and its mode. `status` does not look at
+   hook or MCP wiring, so run the preflight as well, as an ordinary command the
+   user approves:
+
+   ```sh
+   TENUO_PROJECT_DIR='<Project path>' <cli-path> check
+   ```
+
+   Then repair only the problem `check` or `status` reports:
+   - no state directory yet (a policy that was never initialized on this
+     machine): `init`, then `up`;
+   - an initialized project with missing hook wiring, or a changed policy:
+     `refresh`. It rewrites the wiring and keeps the issuer key. Do not use
+     `init` here: it mints a new issuer key and warrant, which a running
+     authorizer does not trust. If the `Plugin:` line says the project is
+     governed via the Tenuo plugin, unwired hooks are expected; change nothing;
+   - a stopped local authorizer, or an expired warrant that did not renew: `up`.
+
+   Never use `--local`, overwrite the policy, or bootstrap an existing Cloud
+   setup. Managed deployments require their administrator's
+   service/configuration; do not replace them with a user-owned authorizer.
+5. Verify with the launcher: `status`. After a bootstrap, its own output already
+   includes the preflight and ends with the policy self-test (`VERIFY OK`); do
+   not run `check` or `verify` again. For an existing setup, run `verify` only
+   when a repair was made, as an ordinary command the user approves. These
+   describe on-disk state and the authorizer, not whether this session loaded
+   the hooks.
    Stop on errors and report the failed step; do not disable governance or
    broaden permissions to get a green result. In a project that is already
-   enforcing, the policy may deny these commands (the starter policy allows only
-   `ls` and `pwd` in the shell). Do not retry or route around a denial: give the
-   user the exact command to run in their own terminal.
-5. Report the project, posture, authorizer and warrant status, and verification
-   outcome. Take the posture from `tenuo-claude status`, not from `mode:` in
-   `tenuo.yaml`: a managed project is enforced even when the file says dry-run
-   (`posture : enforce (pinned by org)`). Say **Observing — actions are logged,
-   not blocked** only when status shows `DRY-RUN — observe-only`. Say
-   **Enforcing — out-of-policy governed calls are blocked** only when checks
-   pass and status does not show dry-run. Tell the user to open a new Claude Code session in the
-   project so changed project hooks load, then use `/tenuo:audit` after normal
-   work. The CLI self-test alone does not prove this session loaded the hooks.
+   enforcing, the policy may deny these commands (the starter policy allows
+   only `ls` and `pwd` in the shell). Do not retry or route around a denial:
+   give the user the exact command to run in their own terminal.
+6. Report in five lines or fewer: the project, the posture, authorizer and
+   warrant status, and the verification outcome. Take the posture from
+   `status`, not from `mode:` in `tenuo.yaml`: a managed project is enforced
+   even when the file says dry-run (`posture : enforce (pinned by org)`). Say
+   **Observing — actions are logged, not blocked** only when status shows
+   `DRY-RUN — observe-only`. Say **Enforcing — out-of-policy governed calls are
+   blocked** only when checks pass and status does not show dry-run. Then give
+   the next two steps: open a new Claude Code session in the project so the
+   project hooks load, and after some normal work ask "what did Claude do?"
+   (or run `/tenuo:audit`) to see what the policy would have stopped.
 
 Switch to `mode: enforce` only when the user requests it, after reviewing the
 policy. Apply with `refresh`, then `verify` and `status`. Never demonstrate a
