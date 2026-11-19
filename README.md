@@ -45,7 +45,7 @@ Tenuo runs alongside Claude Code permissions. It checks the call whatever led th
 
 ## Quickstart
 
-One command to try it:
+From the project you want to govern (requires uv and Claude Code):
 
 ```bash
 uv tool install tenuo-claude-code
@@ -65,7 +65,7 @@ to see the signed decision log, including what would have been denied.
 
 1. **`--pack filesystem-dev`** generates a preconfigured policy:
    - Read, edit and search files in your project directory (paths resolved, symlinks followed)
-   - Never read or change Tenuo's own files: its keys and state, `tenuo.yaml`, `.mcp.json`, `.claude/settings*.json`
+   - In enforce mode, deny reads or changes to Tenuo's own files: its keys and state, `tenuo.yaml`, `.mcp.json`, `.claude/settings*.json`
    - Run only `ls` and `pwd` in the shell; add your test and build commands to `Bash:`. The shell check covers the command name, not its paths, so list only commands you'd allow on any path
    - Deny everything else by default
    - Start in `mode: dry-run` (log, don't block)
@@ -121,9 +121,19 @@ The repo is also a Claude Code plugin marketplace. Inside Claude Code:
 ```text
 /plugin marketplace add tenuo-ai/tenuo-claude-code
 /plugin install tenuo@tenuo
+/tenuo:setup
 ```
 
-The plugin still needs the CLI (`uv tool install tenuo-claude-code`) and a policy (`tenuo-claude bootstrap --native --pack filesystem-dev`). What it adds:
+`/tenuo:setup` locates or installs the persistent CLI, configures a new project in
+observation mode, and runs check, verify, and status. It preserves existing
+policies and Cloud configuration. Installing the plugin alone does not activate
+governance. Start a new Claude Code session after setup so project hooks load.
+
+For an existing setup, use `/tenuo:status` and `/tenuo:audit`; do not rerun local
+bootstrap over a Cloud configuration. Removing the plugin does not remove
+CLI-managed project wiring; use `tenuo-claude disable` or `uninstall` for that.
+
+What the plugin adds:
 
 - **Hooks that stay out of the way.** PreToolUse, PostToolUse, and SessionStart hooks run in every project, but they do nothing unless the project has opted in. Repos without Tenuo keep Claude Code's normal permissions.
 - **A fail-closed safety net.** If a project is governed but its `.claude/settings.json` wiring is missing (a fresh clone, a regenerated settings file), the plugin routes each call to `tenuo-claude _hook` itself. If the CLI can't be found or crashes, the call is denied with a message saying how to fix it.
@@ -198,13 +208,13 @@ Full command reference: [Commands](#commands).
 
 ## Cloud Mode
 
-For organizations: org-root warrants, instant fleet revocation, human approval gates, and a central audit trail.
+For organizations: org-root warrants, fleet revocation, human approval gates, and a central audit trail.
 
 ```bash
 tenuo-claude bootstrap --native --pack filesystem-dev --cloud
 ```
 
-Setup takes ~2 minutes (Cloud tenant, runtime credentials, policy trigger). After that, Tenuo issues warrants signed by your org root, revokes them fleet-wide in ~30s, and sends signed receipts to your tenant for compliance audit.
+After configuring a Cloud tenant, runtime credentials, and policy trigger, Tenuo issues warrants signed by your org root, revokes them fleet-wide in ~30s, and sends signed receipts to your tenant for compliance audit.
 
 Human approval is optional: gate any tool to require sign-off (Slack, Telegram, console, etc.) from a named approver.
 
@@ -446,7 +456,7 @@ For Cloud, receipts are sent to your tenant (central audit). Locally, receipts a
 Tenuo runs alongside Claude Code permissions; it doesn't replace them. The difference:
 
 - **Claude Code permissions:** Prompt the user; can be bypassed with `--dangerously-skip-permissions`
-- **Tenuo warrant:** Signed, expiring authority enforced by an authorizer before each call; cannot be disabled by the user or model
+- **Tenuo warrant:** Signed, expiring authority enforced by an authorizer before each call; local wiring can be removed by the machine owner; managed settings and a protected authorizer are needed to resist that
 
 The warrant is a capability token: it lists what Claude can do and for how long. Each action is checked against the warrant before it runs. The same boundary applies regardless of why the model tried the call: prompt injection, hallucination, poisoned tool output, or direct user request.
 

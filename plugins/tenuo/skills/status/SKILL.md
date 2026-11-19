@@ -14,8 +14,10 @@ Tenuo plugin status and `tenuo-claude check` output, run from the governed proje
 Show the user that output verbatim, then add at most three short lines:
 
 - If it says `tenuo-claude not found`, tell the user to install it with `uv tool install tenuo-claude-code` (or `pipx install tenuo-claude-code`).
-- If it says there is no `tenuo.yaml`, say Tenuo is not active here and the next step is `tenuo-claude bootstrap --native --pack filesystem-dev`.
+- If it says there is no `tenuo.yaml`, say Tenuo is not active here and the next step is `/tenuo:setup`.
 - If the `Plugin:` line says the project is governed via the Tenuo plugin, a `claude hooks: not wired yet` line from `check` is expected: the plugin's hooks are doing the enforcement. Do not call that a problem.
 - Otherwise, if any check failed, name the failing line and the fix it suggests.
 
 Do not suggest widening the Tenuo policy (for example adding commands to the Bash allowlist).
+
+This is read-only: do not start services, refresh warrants, or change policy. Dry-run means observation, not blocking. Passing checks describe on-disk wiring and authorizer health, not whether this running session loaded the hooks.
