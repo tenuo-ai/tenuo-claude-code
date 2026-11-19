@@ -506,6 +506,21 @@ def test_run_without_policy_says_tenuo_is_not_set_up(tmp_path, env, home):
     assert "Found Cloud credentials" in proc.stdout and "unfinished Cloud setup" in proc.stdout
 
 
+def test_run_finds_a_cli_in_the_project_virtualenv_before_a_policy_exists(tmp_path, env):
+    """Setup trusts this line. A CLI that is only in the project's .venv must be
+    reported, or setup installs a second one."""
+    proj = tmp_path / "fresh"
+    proj.mkdir()
+    cli_path = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", "exit 0")
+    by_cwd = run_skill_command(["--version"], env, proj)
+    assert f"CLI: found at {cli_path}" in by_cwd.stdout
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    by_session = run_skill_command(["--version"], {**env, "CLAUDE_PROJECT_DIR": str(proj)}, elsewhere)
+    assert f"CLI: found at {cli_path}" in by_session.stdout
+    assert f"Project: {proj}" in by_session.stdout
+
+
 @pytest.mark.parametrize("overlay", ["tenuo.cloud.yaml", "tenuo.advanced.yaml"])
 def test_run_flags_a_cloud_overlay_without_a_policy(tmp_path, env, overlay):
     """Local bootstrap moves Cloud overlays aside, so setup must not treat a

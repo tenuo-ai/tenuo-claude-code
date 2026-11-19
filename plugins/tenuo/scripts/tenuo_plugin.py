@@ -451,12 +451,15 @@ def run_cli(args: list[str], env: dict) -> int:
         # Broken explicit opt-in: the hooks deny every call until it is fixed.
         print(f"Plugin: {status_line({}, env)}")
         return 0
-    cli = find_cli(root, env)
+    # No policy yet: the project is the session's directory. Look for the CLI
+    # there too, or a CLI in the project's own virtualenv is reported missing
+    # and setup installs a second one.
+    here = Path(env.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    cli = find_cli(root if root is not None else here, env)
     if root is None:
         cli_note = f"found at {cli}" if cli else f"not installed (install: {INSTALL_HINT})"
         print(f"No {POLICY_FILE} in this directory or any parent: Tenuo is not set up here. "
               f"To set it up: {SETUP_HINT}. tenuo-claude CLI: {cli_note}.")
-        here = Path(env.get("CLAUDE_PROJECT_DIR") or os.getcwd())
         print(f"Project: {here}")
         credentials = any((d / name).exists()
                           for d in (project_state_dir(here, env), here / STATE_DIR)
