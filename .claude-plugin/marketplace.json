@@ -5,13 +5,13 @@
     "email": "daniel@tenuo.ai",
     "url": "https://tenuo.ai"
   },
-  "description": "Tenuo plugins for Claude Code.",
+  "description": "Tenuo for Claude Code: limit what Claude and its MCP servers can do, with a signed record of every call.",
   "plugins": [
     {
       "name": "tenuo",
       "displayName": "Tenuo",
       "source": "./plugins/tenuo",
-      "description": "Task-scoped authorization for Claude Code: warrants constrain tools and arguments before each call, with signed receipts. Inactive until a project opts in with tenuo.yaml.",
+      "description": "Give Claude Code real access and keep it in bounds: limit each tool and MCP server to the repos, folders, shell commands and web domains you name, and get a signed record of every allowed and denied call. Starts in observe-only mode. Inactive until a project opts in with tenuo.yaml.",
       "author": {
         "name": "Tenuo",
         "url": "https://tenuo.ai"
@@ -20,7 +20,29 @@
       "repository": "https://github.com/tenuo-ai/tenuo-claude-code",
       "license": "Apache-2.0",
       "category": "security",
-      "tags": ["security", "authorization", "governance", "audit"]
+      "tags": [
+        "permissions",
+        "guardrails",
+        "mcp",
+        "audit-log",
+        "security",
+        "authorization",
+        "governance",
+        "policy"
+      ],
+      "relevance": {
+        "topic": "Tenuo",
+        "signals": {
+          "cli": [
+            "tenuo-claude",
+            "tenuo-admin"
+          ],
+          "filesRead": [
+            "**/tenuo.yaml",
+            "**/tenuo.cloud.yaml"
+          ]
+        }
+      }
     }
   ]
 }

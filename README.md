@@ -45,7 +45,7 @@ Tenuo runs alongside Claude Code permissions. It checks the call whatever led th
 
 ## Quickstart
 
-One command to try it:
+From the project you want to govern (requires uv and Claude Code):
 
 ```bash
 uv tool install tenuo-claude-code
@@ -53,7 +53,9 @@ tenuo-claude bootstrap --native --pack filesystem-dev
 claude
 ```
 
-That's it. `bootstrap` with `--pack filesystem-dev` generates a starter policy (read and edit your project, keep Tenuo's keys and hook wiring out of reach, a minimal shell), starts the authorizer, and runs a self-test. The first run also downloads the pinned authorizer binary to `~/.tenuo/bin`. The pack starts in `mode: dry-run`, so nothing is blocked yet: open Claude Code, work normally, ask for something out of scope (say, reading a file outside the project), then:
+Prefer to stay inside Claude Code? [Install the plugin](#install-as-a-claude-code-plugin) and run `/tenuo:setup` instead; it does the same thing.
+
+`bootstrap` with `--pack filesystem-dev` generates a starter policy (read and edit your project, keep Tenuo's keys and hook wiring out of reach, a minimal shell), starts the authorizer, and runs a self-test. The first run also downloads the pinned authorizer binary to `~/.tenuo/bin`. The pack starts in `mode: dry-run`, so nothing is blocked yet: open Claude Code, work normally, ask for something out of scope (say, reading a file outside the project), then:
 
 ```bash
 tenuo-claude audit --verify
@@ -65,7 +67,7 @@ to see the signed decision log, including what would have been denied.
 
 1. **`--pack filesystem-dev`** generates a preconfigured policy:
    - Read, edit and search files in your project directory (paths resolved, symlinks followed)
-   - Never read or change Tenuo's own files: its keys and state, `tenuo.yaml`, `.mcp.json`, `.claude/settings*.json`
+   - In enforce mode, deny reads or changes to Tenuo's own files: its keys and state, `tenuo.yaml`, `.mcp.json`, `.claude/settings*.json`
    - Run only `ls` and `pwd` in the shell; add your test and build commands to `Bash:`. The shell check covers the command name, not its paths, so list only commands you'd allow on any path
    - Deny everything else by default
    - Start in `mode: dry-run` (log, don't block)
@@ -116,18 +118,36 @@ Then follow the Cloud setup prompts. [Details: Cloud mode](#cloud-mode).
 
 ## Install as a Claude Code plugin
 
-The repo is also a Claude Code plugin marketplace. Inside Claude Code:
+The repo is also a Claude Code plugin marketplace. From your shell:
 
-```text
-/plugin marketplace add tenuo-ai/tenuo-claude-code
-/plugin install tenuo@tenuo
+```bash
+claude plugin install tenuo --marketplace tenuo-ai/tenuo-claude-code
 ```
 
-The plugin still needs the CLI (`uv tool install tenuo-claude-code`) and a policy (`tenuo-claude bootstrap --native --pack filesystem-dev`). What it adds:
+That form needs Claude Code 2.1.292 or later. On older versions, or from inside a session, run `/plugin marketplace add tenuo-ai/tenuo-claude-code` and then `/plugin install tenuo@tenuo`. You can also ask Claude to run the shell command for you; start a new session afterwards so the plugin loads.
+
+Then open Claude Code in your project and run `/tenuo:setup`, or say what you want in your own words: "limit Claude to this repo and keep a log of what it does". Claude tells you what setup will change and asks before it installs anything. Setup installs the CLI, writes a starter policy and starts in observe-only mode, so nothing is blocked yet.
+
+Work as usual. Then ask "what did Claude do?" or run `/tenuo:audit` to see every tool call, signed, including the ones your policy would have stopped. When the log looks right, switch the policy to `mode: enforce` and run `tenuo-claude refresh`.
+
+| Skill | What it does | Ask for it like this |
+|---|---|---|
+| `/tenuo:setup` | Installs the CLI, writes a starter policy, verifies the authorizer; checks and repairs an existing setup | "Set up Tenuo here", "limit what the GitHub MCP server can touch" |
+| `/tenuo:status` | Shows whether this project is governed and whether it is observing or enforcing | "Is Tenuo on?" |
+| `/tenuo:audit` | Shows and verifies the signed record of allowed and denied calls | "What did Claude do?", "why was that blocked?" |
+
+Good to know:
+
+- Installing the plugin alone does not turn governance on. A project opts in through setup.
+- Start a new Claude Code session after setup so the project hooks load.
+- Setup keeps an existing policy and Cloud configuration. Do not rerun local bootstrap over a Cloud configuration.
+- Removing the plugin does not remove CLI-managed project wiring; use `tenuo-claude disable` or `uninstall` for that.
+
+What the plugin adds:
 
 - **Hooks that stay out of the way.** PreToolUse, PostToolUse, and SessionStart hooks run in every project, but they do nothing unless the project has opted in. Repos without Tenuo keep Claude Code's normal permissions.
 - **A fail-closed safety net.** If a project is governed but its `.claude/settings.json` wiring is missing (a fresh clone, a regenerated settings file), the plugin routes each call to `tenuo-claude _hook` itself. If the CLI can't be found or crashes, the call is denied with a message saying how to fix it.
-- **A one-line status at session start**, plus `/tenuo:status` (`tenuo-claude check`) and `/tenuo:audit` (`tenuo-claude audit --verify`).
+- **A one-line status at session start**, plus the three skills above. `/tenuo:status` runs `tenuo-claude check` and `/tenuo:audit` runs `tenuo-claude audit --verify`.
 
 How the plugin decides, per tool call:
 
@@ -198,13 +218,13 @@ Full command reference: [Commands](#commands).
 
 ## Cloud Mode
 
-For organizations: org-root warrants, instant fleet revocation, human approval gates, and a central audit trail.
+For organizations: org-root warrants, fleet revocation, human approval gates, and a central audit trail.
 
 ```bash
 tenuo-claude bootstrap --native --pack filesystem-dev --cloud
 ```
 
-Setup takes ~2 minutes (Cloud tenant, runtime credentials, policy trigger). After that, Tenuo issues warrants signed by your org root, revokes them fleet-wide in ~30s, and sends signed receipts to your tenant for compliance audit.
+After configuring a Cloud tenant, runtime credentials, and policy trigger, Tenuo issues warrants signed by your org root, revokes them fleet-wide in ~30s, and sends signed receipts to your tenant for compliance audit.
 
 Human approval is optional: gate any tool to require sign-off (Slack, Telegram, console, etc.) from a named approver.
 
@@ -446,7 +466,7 @@ For Cloud, receipts are sent to your tenant (central audit). Locally, receipts a
 Tenuo runs alongside Claude Code permissions; it doesn't replace them. The difference:
 
 - **Claude Code permissions:** Prompt the user; can be bypassed with `--dangerously-skip-permissions`
-- **Tenuo warrant:** Signed, expiring authority enforced by an authorizer before each call; cannot be disabled by the user or model
+- **Tenuo warrant:** Signed, expiring authority checked by an authorizer before each call. In enforce mode the starter policy keeps Claude away from Tenuo's own policy, keys and hook wiring, so the model cannot switch it off. The person who owns the machine can remove local wiring; managed settings and a protected authorizer close that for teams
 
 The warrant is a capability token: it lists what Claude can do and for how long. Each action is checked against the warrant before it runs. The same boundary applies regardless of why the model tried the call: prompt injection, hallucination, poisoned tool output, or direct user request.
 

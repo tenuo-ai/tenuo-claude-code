@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -440,6 +441,82 @@ def test_manifests_are_consistent():
     # The plugin must not ship a top-level bin/: Claude adds it to the Bash PATH
     # and the repo's bin/tenuo-claude is a checkout launcher, not a global CLI.
     assert not (PLUGIN / "bin").exists()
+
+
+def run_skill_command(args: list[str], env: dict, cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(SCRIPTS / "tenuo_plugin.py"), "run", *args],
+                          capture_output=True, text=True, cwd=str(cwd), env=env, timeout=60)
+
+
+def test_run_exits_zero_and_reports_the_outcome_in_its_output(tmp_path, env):
+    """Claude Code drops a skill whose injected command exits non-zero, so the
+    skill runner must exit 0 and say what happened in the text instead."""
+    proj = make_project(tmp_path / "p")
+    cli_path = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", "echo checked; exit 3")
+    proc = run_skill_command(["check"], env, proj)
+    assert proc.returncode == 0
+    assert "checked" in proc.stdout
+    assert proc.stdout.rstrip().endswith("[tenuo-claude exited 3]")
+
+    fake_cli(cli_path, "echo checked")
+    proc = run_skill_command(["check"], env, proj)
+    assert proc.returncode == 0 and "exited" not in proc.stdout
+
+
+def test_run_without_policy_says_tenuo_is_not_set_up(tmp_path, env, home):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    proc = run_skill_command(["check"], env, empty)
+    assert proc.returncode == 0
+    assert "Tenuo is not set up here" in proc.stdout and "/tenuo:setup" in proc.stdout
+    assert "CLI: not installed" in proc.stdout
+
+    fake_cli(home / ".local" / "bin" / "tenuo-claude", "exit 0")
+    proc = run_skill_command(["check"], env, empty)
+    assert "Tenuo is not set up here" in proc.stdout and "CLI: found" in proc.stdout
+
+
+def test_run_keeps_inspection_failures_apart_from_no_policy(tmp_path, env):
+    """A missing CLI or a broken TENUO_PROJECT_DIR is not "Tenuo is off": the
+    hooks deny calls in both cases, and earlier receipts may still exist."""
+    proj = make_project(tmp_path / "p")
+    proc = run_skill_command(["audit", "--verify"], env, proj)
+    assert proc.returncode == 0
+    assert "denied until this is fixed" in proc.stdout
+    assert "`tenuo-claude audit --verify` could not run" in proc.stdout
+    assert "not set up here" not in proc.stdout
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    proc = run_skill_command(["check"], {**env, "TENUO_PROJECT_DIR": str(empty)}, empty)
+    assert proc.returncode == 0
+    assert "denied until this is fixed" in proc.stdout and "has no tenuo.yaml" in proc.stdout
+    assert "not set up here" not in proc.stdout
+
+
+SKILL_GRANT = 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run *)'
+SKILL_COMMAND_PREFIX = 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run '
+
+
+@pytest.mark.parametrize("name", ["setup", "status", "audit"])
+def test_skills_can_be_invoked_by_claude_with_a_narrow_grant(name):
+    text = (PLUGIN / "skills" / name / "SKILL.md").read_text()
+    _, front, body = text.split("---\n", 2)
+    meta = dict(line.split(": ", 1) for line in front.strip().splitlines())
+    assert meta["name"] == name
+    # Claude must be able to find and start the skill from a plain request.
+    assert "disable-model-invocation" not in meta
+    assert "Use when" in meta["description"] and len(meta["description"]) <= 1536
+    # The grant covers the bundled launcher only, never an open `python3 *`.
+    assert meta["allowed-tools"] == SKILL_GRANT
+    injected = [line[2:-1] for line in body.splitlines()
+                if line.startswith("!`") and line.endswith("`")]
+    assert injected, "skill should inject launcher output"
+    for command in injected:
+        assert command.startswith(SKILL_COMMAND_PREFIX)
+        # Plain arguments only: a redirect, pipe or chained command would fall
+        # outside the grant and abort the skill.
+        assert re.fullmatch(r"[a-z]+( --?[a-z-]+)*", command[len(SKILL_COMMAND_PREFIX):])
 
 
 def test_disable_marker_round_trip(monkeypatch, tmp_path):
