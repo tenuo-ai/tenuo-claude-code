@@ -1,13 +1,13 @@
 ---
 name: setup
 description: Set up Tenuo for the current project, or check and repair an existing setup. Use when the user wants to limit what Claude or an MCP server can do (specific repos, folders, shell commands, web domains), wants a signed record of Claude's tool calls, or asks to install or set up Tenuo. Starts in observe-only mode, so nothing is blocked until the user turns enforcement on.
-allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run *)
+allowed-tools: Bash("${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook" run *)
 ---
 
 Current state, from the plugin launcher (`tenuo-claude status` when a policy exists):
 
 ```
-!`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run status`
+!`"${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook" run status`
 ```
 
 If the user did not type `/tenuo:setup` themselves, first say in two or three
@@ -24,12 +24,12 @@ duplicate decisions. Do not write hook settings by hand.
 
 A fresh setup should cost the user two approvals: the install and the bootstrap.
 
-- Read-only checks go through the launcher. It is pre-approved, finds the CLI
-  even when it is not on `PATH`, and runs it in the project root. Copy it
-  exactly, quotes included, and change only the last word:
+- Read-only checks go through the plugin's launcher script. It is pre-approved,
+  finds the CLI even when it is not on `PATH`, and runs it in the project root.
+  Copy it exactly, quotes included, and change only the last word:
 
   ```sh
-  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run status
+  "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook" run status
   ```
 
   It accepts `status`, `state-dir`, `audit` and `--version`, and refuses

@@ -44,7 +44,8 @@ JSON parsing).
 ``session-start`` prints one status line and never blocks. In a project with
 no Tenuo policy it prints the setup hint once per machine, then stays silent.
 ``run <command>`` runs a read-only ``tenuo-claude`` command for the plugin
-skills (see ``SKILL_COMMANDS``); anything that changes state is refused, because
+skills (see ``SKILL_COMMANDS``). The skills start it through ``tenuo-hook``, as
+the hooks do, so the same choice of interpreter applies; anything that changes state is refused, because
 the skills pre-approve this script and a pre-approved command must not be able
 to install, rewire or switch governance off. It always exits 0 and reports a
 failure in its output: Claude Code drops a skill whose injected command exits
@@ -319,10 +320,14 @@ def user_state_dir(root: Path, env: dict) -> Path | None:
     The evidence is ``state.json`` in a state directory outside the project,
     which ``tenuo-claude init`` writes and a repository cannot ship. An
     in-project ``.state``, or a link from the project to somewhere else, does
-    not count. Returns None otherwise.
+    not count. Neither does a relative ``TENUO_STATE_DIR``: it names a different
+    place for each program that reads it, depending on where that program was
+    started. Returns None otherwise.
     """
-    override = (env.get("TENUO_STATE_DIR") or "").strip()
-    state = Path(os.path.expanduser(override)) if override else project_state_dir(root, env)
+    override = os.path.expanduser((env.get("TENUO_STATE_DIR") or "").strip())
+    if override and not os.path.isabs(override):
+        return None
+    state = Path(override) if override else project_state_dir(root, env)
     if (state / "state.json").is_file() and not _inside(state, root):
         return state
     return None
@@ -335,9 +340,11 @@ def _set_up_by_this_user(root: Path, env: dict) -> bool:
 def _project_carries_state(root: Path, env: dict) -> bool:
     """True when the project has a state folder of its own (older layout, a
     ``TENUO_STATE_DIR`` pointing into it, or files a repository shipped)."""
-    override = (env.get("TENUO_STATE_DIR") or "").strip()
-    if override and _inside(Path(os.path.expanduser(override)), root):
-        return os.path.isdir(os.path.expanduser(override))
+    override = os.path.expanduser((env.get("TENUO_STATE_DIR") or "").strip())
+    if override and not os.path.isabs(override):
+        return os.path.isdir(os.path.join(str(root), override)) or os.path.isdir(override)
+    if override and _inside(Path(override), root):
+        return os.path.isdir(override)
     return (root / STATE_DIR).exists() or (root / STATE_DIR).is_symlink()
 
 
