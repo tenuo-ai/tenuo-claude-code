@@ -1652,9 +1652,11 @@ def _verify_chain_as_of(chain: list, roots: list[str], when: float | None,
     receipt older than its warrant's lifetime. A receipt has to hold as of the
     moment it records. This repeats the chain checks with expiry judged at that
     moment: a trusted root signed the first warrant, each later warrant is
-    signed by its parent's holder and links to it, and no child holds a tool or
-    constraint its parent lacks. Stricter than the live verifier on that last
-    point: a child's constraints must equal the parent's.
+    signed by its parent's holder and links to it, depth rises by one and stays
+    within every ancestor's delegation limit, no child outlives its parent, no
+    warrant appears twice, and no child holds a tool or constraint its parent
+    lacks. Stricter than the live verifier on that last point: a child's
+    constraints must equal the parent's.
 
     Returns None when the chain holds, else the reason it does not.
     """
@@ -1666,6 +1668,11 @@ def _verify_chain_as_of(chain: list, roots: list[str], when: float | None,
     root_keys = [bytes.fromhex(r) for r in roots]
     if not any(chain[0].verify(key) for key in root_keys):
         return "first warrant is not signed by a trusted root"
+    if chain[0].depth != 0 or chain[0].parent_hash is not None:
+        return "first warrant is not a root warrant"
+    if len({w.id for w in chain}) != len(chain):
+        return "a warrant appears twice in the chain"
+    depth_limit = chain[0].max_depth
     for parent, child in zip(chain, chain[1:]):
         if not child.verify(bytes(parent.authorized_holder.to_bytes())):
             return f"warrant {child.id} is not signed by its parent's holder"
@@ -1673,6 +1680,15 @@ def _verify_chain_as_of(chain: list, roots: list[str], when: float | None,
             return f"warrant {child.id} does not link to its parent"
         if child.depth != parent.depth + 1:
             return f"warrant {child.id} has the wrong depth"
+        # Delegation limits: a parent that may not delegate, or a chain deeper
+        # than any ancestor allows, was never valid.
+        if parent.is_terminal():
+            return f"warrant {child.id} was delegated from a terminal warrant"
+        if child.depth > depth_limit or child.max_depth > parent.max_depth:
+            return f"warrant {child.id} exceeds its parent's delegation depth"
+        depth_limit = min(depth_limit, child.max_depth)
+        if _warrant_expiry_time(child) > _warrant_expiry_time(parent):
+            return f"warrant {child.id} outlives its parent"
         parent_caps = json.loads(_capability_signature(parent))
         for tool, fields in json.loads(_capability_signature(child)).items():
             if parent_caps.get(tool) != fields:
@@ -2475,7 +2491,9 @@ def renew_session_warrant_if_due(cfg: dict) -> str | None:
 
         with _state_lock():
             # Look again under the lock: another renewal, or a `refresh` that
-            # narrowed the policy, may have replaced the warrant meanwhile.
+            # narrowed the policy or changed the lifetime, may have replaced the
+            # warrant meanwhile. Everything used from here on is read now.
+            ttl = _applied_ttl_seconds()
             candidate = _renewal_candidate(cfg)
             if candidate is None or not _renewal_due(candidate[0], ttl):
                 return None
@@ -2507,9 +2525,13 @@ def renew_session_warrant_if_due(cfg: dict) -> str | None:
                     return None
                 children.append((path, encode_warrant_stack([new, child])))
 
-            _replace_secret(WARRANT, new.to_base64())
+            # Each child stack carries its own copy of the new parent, so it is
+            # valid by itself. Publish the children first and the session
+            # warrant last: if any write fails, the old session warrant is
+            # still in place, still due, and the next call renews again.
             for path, stack in children:
                 _replace_secret(path, stack)
+            _replace_secret(WARRANT, new.to_base64())
             update_state_warrant_id(new.id)
         write_receipt({"phase": "renew", "old_warrant_id": old.id, "new_warrant_id": new.id,
                        "reason": "session warrant expired; re-minted with the same permissions"})

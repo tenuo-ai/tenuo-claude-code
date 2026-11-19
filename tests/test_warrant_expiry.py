@@ -214,6 +214,50 @@ def test_secret_replacement_is_safe_under_concurrent_writers(local):
     assert oct(target.stat().st_mode & 0o777) == "0o600"
 
 
+def test_lifetime_changed_by_a_concurrent_refresh_is_respected(local, bound, monkeypatch):
+    """Renewal must not judge a fresh short warrant by the old, longer lifetime."""
+    import contextlib
+    cli.STATE_JSON.write_text(json.dumps({"warrant_id": current().id, "warrant_ttl_seconds": 3600}))
+    real_lock = cli._state_lock
+
+    @contextlib.contextmanager
+    def lock_after_a_refresh_that_shortened_the_lifetime():
+        cli.remint_session({**local, "ttl_seconds": 20})   # a fresh 20-second warrant
+        with real_lock():
+            yield
+
+    # Due on the first look; afterwards the real clock decides.
+    real_left = cli._warrant_seconds_left
+    looks = iter([-1.0])
+    monkeypatch.setattr(cli, "_warrant_seconds_left",
+                        lambda warrant: next(looks, None) or real_left(warrant))
+    monkeypatch.setattr(cli, "_state_lock", lock_after_a_refresh_that_shortened_the_lifetime)
+    assert cli.renew_session_warrant_if_due(local) is None
+    assert current().ttl_seconds() <= 20
+
+
+def test_a_failed_child_write_leaves_renewal_retryable(local, monkeypatch):
+    cfg = {**local, "subagents": {"researcher": {"tools": ["Read"]}}}
+    cli.refresh_subwarrants(cfg)
+    old_id = current().id
+    due(monkeypatch)
+    real_replace = cli._replace_secret
+
+    def failing_for_children(path, text):
+        if path.name.startswith("subwarrant_"):
+            raise OSError("disk full")
+        real_replace(path, text)
+
+    monkeypatch.setattr(cli, "_replace_secret", failing_for_children)
+    assert cli.renew_session_warrant_if_due(cfg) is None
+    # The session warrant was not replaced, so the next call tries again.
+    assert current().id == old_id
+    monkeypatch.setattr(cli, "_replace_secret", real_replace)
+    assert cli.renew_session_warrant_if_due(cfg) is not None
+    parent, child = decode_warrant_stack_base64(cli.subwarrant_path("researcher").read_text())
+    assert parent.id == current().id != old_id
+
+
 def test_missing_keys_or_garbage_never_raise(local, monkeypatch):
     due(monkeypatch)
     cli.WARRANT.write_text("not-a-warrant")
@@ -339,3 +383,25 @@ def test_expired_chain_checks_root_signature_link_and_scope(local):
     wide = Lying(real_child, {"grep": {}, "run_command": {}})
     assert "beyond its parent" in cli._verify_chain_as_of(
         [narrow_parent, wide], roots, time.time(), "allow")
+
+    # Delegation limits are part of what made the chain valid.
+    class Limited:
+        """The same correctly signed parent, reporting a tighter limit."""
+        def __init__(self, real, **over):
+            self._real, self._over = real, over
+        def __getattr__(self, name):
+            return self._over[name] if name in self._over else getattr(self._real, name)
+
+    now = time.time()
+    assert cli._verify_chain_as_of([narrow_parent, real_child], roots, now, "allow") is None
+    assert "delegation depth" in cli._verify_chain_as_of(
+        [Limited(narrow_parent, max_depth=0), real_child], roots, now, "allow")
+    assert "terminal" in cli._verify_chain_as_of(
+        [Limited(narrow_parent, is_terminal=lambda: True), real_child], roots, now, "allow")
+    assert "outlives" in cli._verify_chain_as_of(
+        [narrow_parent, Limited(real_child, expires_at=lambda: "2999-01-01T00:00:00+00:00")],
+        roots, now, "allow")
+    assert "twice" in cli._verify_chain_as_of(
+        [narrow_parent, Limited(real_child, id=narrow_parent.id)], roots, now, "allow")
+    assert "root warrant" in cli._verify_chain_as_of([real_child], [bytes(
+        holder.public_key.to_bytes()).hex()], now, "allow")
