@@ -121,6 +121,8 @@ def test_a_warrant_from_another_issuer_is_not_replaced(local, monkeypatch):
     due(monkeypatch)
     assert cli.renew_session_warrant_if_due(local) is None
     assert cli.WARRANT.read_text() == foreign
+    # Diagnostics must not promise a renewal that will not happen.
+    assert cli.local_auto_renew_applies(local) is False
 
 
 def test_subagent_warrants_follow_the_new_session_warrant(local, monkeypatch):
@@ -136,6 +138,80 @@ def test_subagent_warrants_follow_the_new_session_warrant(local, monkeypatch):
     assert parent.id == current().id
     assert sorted(child.tools) == sorted(old_child.tools) == ["read_file"]
     assert not child.is_expired()
+
+
+def test_a_revoked_warrant_does_not_come_back(local, monkeypatch):
+    """`revoke` kills one warrant id; renewal must not mint a fresh one in its place."""
+    import argparse
+    cli.STATE_JSON.write_text(json.dumps({"warrant_id": current().id}))
+    monkeypatch.setattr(cli, "load_config", lambda: local)
+    monkeypatch.setattr(cli, "cloud_creds", lambda cfg: {})
+    monkeypatch.setattr(cli, "runtime_env", lambda: {})
+    monkeypatch.setattr(cli, "cmd_down", lambda args: None)
+    monkeypatch.setattr(cli, "cmd_up", lambda args: None)
+    cli.cmd_revoke(argparse.Namespace())
+    before = cli.WARRANT.read_text()
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due(local) is None
+    assert cli.WARRANT.read_text() == before
+    assert cli.local_auto_renew_applies(local) is False
+    assert cli.warrant_expiry_note(local)[1] != "renews automatically"
+    # An explicit re-mint is the operator saying "carry on".
+    cli.remint_session(local)
+    assert cli.local_auto_renew_applies(local) is True
+
+
+def test_renewal_does_not_undo_a_refresh_that_narrowed_the_policy(local, make_cfg, bound, monkeypatch):
+    """Renewal reads, then writes. A `refresh` landing in between must win."""
+    import contextlib
+    narrowed_cfg = make_cfg(enforce={"Read": "subpath:{sandbox}"}, _sandbox_abs=str(bound))
+    real_lock = cli._state_lock
+
+    @contextlib.contextmanager
+    def lock_after_a_concurrent_refresh():
+        cli.remint_session(narrowed_cfg)   # what `refresh` does, just before we get the lock
+        with real_lock():
+            yield
+
+    left = iter([-1.0])                    # due on the first look only
+    monkeypatch.setattr(cli, "_warrant_seconds_left", lambda warrant: next(left, 3000.0))
+    monkeypatch.setattr(cli, "_state_lock", lock_after_a_concurrent_refresh)
+    assert cli.renew_session_warrant_if_due(local) is None
+    assert "run_command" not in current().tools
+
+
+def test_renewal_uses_the_lifetime_that_was_applied_not_an_edited_one(local, monkeypatch):
+    cli.STATE_JSON.write_text(json.dumps({"warrant_id": current().id, "warrant_ttl_seconds": 120}))
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due({**local, "ttl_seconds": 999999}) is not None
+    assert current().ttl_seconds() <= 120
+
+
+def test_a_short_lived_subagent_warrant_stays_short_lived(local, monkeypatch):
+    cfg = {**local, "subagents": {"researcher": {"tools": ["Read"], "ttl_seconds": 60}}}
+    cli.remint_session(cfg)
+    cli.refresh_subwarrants(cfg)
+    path = cli.subwarrant_path("researcher")
+    assert decode_warrant_stack_base64(path.read_text())[-1].ttl_seconds() <= 60
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due(cfg) is not None
+    parent, child = decode_warrant_stack_base64(path.read_text())
+    assert parent.ttl_seconds() > 3000
+    assert 50 <= child.ttl_seconds() <= 61
+
+
+def test_secret_replacement_is_safe_under_concurrent_writers(local):
+    import threading
+    target = cli.STATE / "shared.b64"
+    payloads = [str(n) * 4000 for n in range(8)]
+    threads = [threading.Thread(target=cli._replace_secret, args=(target, body)) for body in payloads]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert target.read_text() in payloads
+    assert not list(cli.STATE.glob(".shared.b64.*"))
+    assert oct(target.stat().st_mode & 0o777) == "0o600"
 
 
 def test_missing_keys_or_garbage_never_raise(local, monkeypatch):
@@ -164,14 +240,9 @@ def test_expiry_note_for_status_and_check(local, monkeypatch):
     assert state == "soon" and note.startswith("expires soon")
 
 
-def test_expiry_note_when_expired(local, monkeypatch):
-    class Expired:
-        def is_expired(self):
-            return True
-
-    import tenuo
-    monkeypatch.setattr(tenuo.Warrant, "from_base64", staticmethod(lambda raw: Expired()),
-                        raising=False)
+def test_expiry_note_when_expired(local):
+    mint_short_lived(local)
+    time.sleep(2.1)
     assert cli.warrant_expiry_note(local) == ("ok", "expired; renews on the next tool call")
     assert cli.warrant_expiry_note({**local, "auto_renew": False}) == ("expired", "")
 

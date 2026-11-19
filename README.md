@@ -361,7 +361,7 @@ For internal egress, `WebFetch` also accepts `cidrs:` (e.g., `cidrs: ["10.0.0.0/
   - **`mode: dry-run`** logs decisions, blocks nothing (use to shadow a policy before enforcing)
 - **`subagents:`** declares roles; each runs with attenuated authority
 - **`ttl_seconds:`** warrant lifetime in seconds (default 3600 = 1h)
-- **`auto_renew:`** local mode only (default `true`). When the warrant expires, the next tool call re-mints it with exactly the permissions it already had, so a setup keeps working from one day to the next. It never picks up edits to `tenuo.yaml`; those take effect only when you run `tenuo-claude refresh`. Set `false` to make authority lapse at `ttl_seconds` until you run `tenuo-claude up`. Cloud and managed warrants are issued by the Cloud trigger and are never renewed locally
+- **`auto_renew:`** local mode only (default `true`). When the warrant expires, the next tool call re-mints it with exactly the permissions it already had, so a setup keeps working from one day to the next. It never picks up edits to `tenuo.yaml`; those take effect only when you run `tenuo-claude refresh`. Set `false` to make authority lapse at `ttl_seconds` until you run `tenuo-claude up`. `tenuo-claude revoke` also stops renewal until the next `refresh`. Cloud and managed warrants are issued by the Cloud trigger and are never renewed locally
 
 After any edit, run `tenuo-claude refresh`.
 
