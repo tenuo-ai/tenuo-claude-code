@@ -232,3 +232,21 @@ def test_cloud_bootstrap_missing_token_does_not_scaffold(monkeypatch, tmp_path):
 
     assert not (tmp_path / "tenuo.yaml").exists()
     assert not (tmp_path / "workspace").exists()
+
+
+def test_verify_probe_file_never_writes_through_a_link(tmp_path):
+    """A link left at the probe path must not send the write to its target."""
+    from tenuo_claude_code import verify
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep me\n")
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    probe = sandbox / ".tenuo_verify_probe"
+    probe.symlink_to(outside)
+    verify._write_probe_file(probe)
+    assert outside.read_text() == "keep me\n"
+    assert not probe.is_symlink() and probe.read_text() == "tenuo-verify\n"
+    # An ordinary leftover file is simply replaced.
+    probe.write_text("stale\n")
+    verify._write_probe_file(probe)
+    assert probe.read_text() == "tenuo-verify\n"

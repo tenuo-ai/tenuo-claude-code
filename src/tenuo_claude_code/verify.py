@@ -80,6 +80,20 @@ def _off_allowlist_url(domains: list[str]) -> str:
     return "https://example.com/data"
 
 
+def _write_probe_file(path: Path) -> None:
+    """Create the probe file without writing through anything already there.
+
+    A link left at this path would send a plain write to its target, which can
+    be outside the sandbox. Remove whatever is at the path, then create the
+    file exclusively and refuse to follow a link.
+    """
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags, 0o600), "w") as fh:
+        fh.write("tenuo-verify\n")
+
+
 def build_probes(cfg: dict, *, deep: bool) -> tuple[list[Probe], list[Callable[[], None]]]:
     """Build probes from ``tenuo.yaml`` and register filesystem cleanups."""
     sb = cfg["_sandbox_abs"]
@@ -90,7 +104,7 @@ def build_probes(cfg: dict, *, deep: bool) -> tuple[list[Probe], list[Callable[[
 
     Path(sb).mkdir(parents=True, exist_ok=True)
     probe_file = Path(sb) / ".tenuo_verify_probe"
-    probe_file.write_text("tenuo-verify\n")
+    _write_probe_file(probe_file)
     cleanups.append(lambda: probe_file.unlink(missing_ok=True))
 
     if "Read" in governed:

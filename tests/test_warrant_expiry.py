@@ -23,6 +23,7 @@ from tenuo_claude_code import cli
 def local(bound, make_cfg, monkeypatch):
     """A local-mode project with real keys and a freshly minted session warrant."""
     monkeypatch.setattr(cli, "use_cloud_trigger", lambda cfg: False)
+    monkeypatch.setattr(cli, "cloud_creds", lambda cfg: {})
     cfg = make_cfg(enforce={"Read": "subpath:{sandbox}", "Bash": "shlex:ls,pwd"},
                    _sandbox_abs=str(bound))
     cli.ensure_state_dir()
@@ -111,6 +112,55 @@ def test_cloud_and_managed_warrants_are_never_renewed_locally(local, monkeypatch
         cfg["_managed"] = True
     assert cli.renew_session_warrant_if_due(cfg) is None
     assert cli.WARRANT.read_text() == before
+
+
+@pytest.mark.parametrize("creds", [
+    {"url": "https://tenant.example", "api_key": "k"},
+    {"url": "https://tenant.example"},
+    {"api_key": "k"},
+])
+def test_a_cloud_connected_project_is_never_renewed_locally(local, monkeypatch, creds):
+    """A connected authorizer takes revocations from the tenant. A locally
+    minted id would not be on that list, so it must not be minted."""
+    before = cli.WARRANT.read_text()
+    monkeypatch.setattr(cli, "cloud_creds", lambda cfg: creds)
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due(local) is None
+    assert cli.WARRANT.read_text() == before
+    assert cli.local_auto_renew_applies(local) is False
+
+
+def write_srl(*revoked_ids: str) -> None:
+    from tenuo import SignedRevocationList
+    issuer = SigningKey.from_bytes(base64.b64decode(cli.ISSUER_KEY.read_text()))
+    builder = SignedRevocationList.builder()
+    for wid in revoked_ids:
+        builder.revoke(wid)
+    builder.version(int(time.time()))
+    cli.SRL.write_bytes(bytes(builder.build(issuer).to_bytes()))
+
+
+def test_a_warrant_revoked_before_the_upgrade_is_not_renewed(local, monkeypatch):
+    """0.7.0 wrote the revocation list but no renewal block."""
+    write_srl(current().id)
+    assert not (cli.STATE / cli.RENEWAL_BLOCK_NAME).exists()
+    before = cli.WARRANT.read_text()
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due(local) is None
+    assert cli.WARRANT.read_text() == before
+    assert cli.local_auto_renew_applies(local) is False
+
+
+def test_an_unreadable_revocation_list_blocks_renewal(local, monkeypatch):
+    cli.SRL.write_bytes(b"not a revocation list")
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due(local) is None
+
+
+def test_a_revocation_of_some_other_warrant_does_not_block(local, monkeypatch):
+    write_srl("tnu_wrt_some_older_warrant")
+    due(monkeypatch)
+    assert cli.renew_session_warrant_if_due(local) is not None
 
 
 def test_a_warrant_from_another_issuer_is_not_replaced(local, monkeypatch):

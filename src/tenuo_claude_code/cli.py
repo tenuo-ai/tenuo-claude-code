@@ -2433,16 +2433,37 @@ def _applied_ttl_seconds() -> int:
     return DEFAULT_SESSION_TTL_SECONDS
 
 
+def _locally_revoked(warrant_id: str) -> bool:
+    """True when the local revocation list names this warrant.
+
+    Covers a warrant revoked before the renewal block existed (a project
+    upgraded from 0.7.0). A list that cannot be read counts as a revocation:
+    not renewing is the safe side.
+    """
+    if not SRL.exists():
+        return False
+    try:
+        from tenuo import SignedRevocationList
+        return bool(SignedRevocationList.from_bytes(SRL.read_bytes()).is_revoked(warrant_id))
+    except Exception:
+        return True
+
+
 def _renewal_candidate(cfg: dict):
     """The session warrant and keys, when this machine may renew it unattended.
 
-    Returns ``(warrant, issuer, holder)`` or None. All of these must hold: local
-    mode, not managed, `auto_renew` not switched off, no revocation since the
-    last explicit mint, and a warrant this machine issued to this holder. A
+    Returns ``(warrant, issuer, holder)`` or None. All of these must hold: purely
+    local mode (no Cloud trigger and no Cloud connection, because a connected
+    authorizer takes revocations from the tenant and a locally minted id would
+    not be on that list), not managed, `auto_renew` not switched off, no
+    revocation on record, and a warrant this machine issued to this holder. A
     Cloud-issued warrant left behind in a project is never replaced by a local
     one.
     """
     if not auto_renew_enabled(cfg) or managed_mode(cfg) or use_cloud_trigger(cfg):
+        return None
+    creds = cloud_creds(cfg)
+    if creds.get("url") or creds.get("api_key"):
         return None
     if not (WARRANT.exists() and ISSUER_KEY.exists() and HOLDER_KEY.exists()):
         return None
@@ -2451,6 +2472,8 @@ def _renewal_candidate(cfg: dict):
     from tenuo import SigningKey, Warrant
 
     warrant = Warrant.from_base64(WARRANT.read_text())
+    if _locally_revoked(warrant.id):
+        return None
     issuer = SigningKey.from_bytes(base64.b64decode(ISSUER_KEY.read_text()))
     holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
     if bytes(warrant.issuer.to_bytes()) != bytes(issuer.public_key.to_bytes()):
