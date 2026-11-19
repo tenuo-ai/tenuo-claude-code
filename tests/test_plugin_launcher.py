@@ -59,14 +59,26 @@ def env(home, tmp_path, monkeypatch):
     return {"HOME": str(home), "PATH": f"{empty_bin}:/usr/bin:/bin"}
 
 
-def make_project(root: Path, *, state=True, disabled=False) -> Path:
+def state_dir(root: Path, home: Path | None = None) -> Path:
+    """Where this user's state for ``root`` lives: under their home, as the CLI
+    puts it. Tests keep the fake home beside the project unless told otherwise."""
+    home = home or root.parent / "home"
+    return tp.project_state_dir(root, {"HOME": str(home)})
+
+
+def make_project(root: Path, *, state=True, disabled=False, home: Path | None = None,
+                 in_project_state=False) -> Path:
+    """A project with a policy. ``state`` sets it up for this user (state.json
+    under their home). ``in_project_state`` instead puts the state folder inside
+    the project, which is what an older layout or a cloned repository has."""
     root.mkdir(parents=True, exist_ok=True)
     (root / "tenuo.yaml").write_text("name: test\n")
+    where = root / ".state" if in_project_state else state_dir(root, home)
     if state:
-        (root / ".state").mkdir(exist_ok=True)
-        (root / ".state" / "state.json").write_text("{}")
+        where.mkdir(parents=True, exist_ok=True)
+        (where / "state.json").write_text("{}")
     if disabled:
-        (root / ".state" / "disabled").write_text("disabled\n")
+        (where / "disabled").write_text("disabled\n")
     return root
 
 
@@ -78,10 +90,10 @@ def fake_cli(path: Path, body: str) -> Path:
     return path
 
 
-def wire_like_bootstrap(monkeypatch, project: Path) -> None:
+def wire_like_bootstrap(monkeypatch, project: Path, home: Path | None = None) -> None:
     """Write .claude/settings.json with the REAL bootstrap wiring code."""
     monkeypatch.setattr(cli, "DEMO_DIR", project, raising=False)
-    monkeypatch.setattr(cli, "STATE", project / ".state", raising=False)
+    monkeypatch.setattr(cli, "STATE", state_dir(project, home), raising=False)
     monkeypatch.setattr(cli, "APPROVAL_POLL_SECONDS", 30, raising=False)
     monkeypatch.setattr(cli, "LAUNCHER", project / "bin" / "tenuo-claude", raising=False)
     monkeypatch.setattr(cli, "LAUNCHER_REL", "./bin/tenuo-claude", raising=False)
@@ -183,8 +195,8 @@ def test_wiring_in_a_nested_project_the_session_did_not_load_is_ignored(tmp_path
     nested project it later `cd`s into never runs, so the plugin must enforce."""
     outer = tmp_path / "outer"
     outer.mkdir()
-    inner = make_project(outer / "inner")
-    wire_like_bootstrap(monkeypatch, inner)
+    inner = make_project(outer / "inner", home=tmp_path / "home")
+    wire_like_bootstrap(monkeypatch, inner, tmp_path / "home")
     fake_cli(inner / ".venv" / "bin" / "tenuo-claude", "exit 0")
     decision = tp.decide({"cwd": str(inner)}, {**env, "CLAUDE_PROJECT_DIR": str(outer)})[0]
     assert decision == tp.DELEGATE
@@ -574,7 +586,7 @@ def test_run_passes_read_only_commands_through(tmp_path, env, home, args):
 def test_run_does_not_execute_a_project_copy_of_the_cli_before_setup(tmp_path, env, home):
     """A repository can ship a policy, a `.state` folder and a `.venv`. None of
     that makes its `tenuo-claude` something to run without asking."""
-    proj = make_project(tmp_path / "cloned")          # tenuo.yaml + in-project .state
+    proj = make_project(tmp_path / "cloned", in_project_state=True)   # tenuo.yaml + its own .state
     ran = tmp_path / "ran"
     local = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f"echo ran > {ran}")
     proc = run_skill_command(["status"], env, proj)
@@ -744,13 +756,13 @@ def test_disable_marker_round_trip(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "managed_mode", lambda _cfg: False)
 
     cli.cmd_disable(types.SimpleNamespace())
-    assert (proj / ".state" / "disabled").is_file()
-    env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin", "CLAUDE_PROJECT_DIR": str(proj)}
+    assert (state_dir(proj) / "disabled").is_file()
+    env = {"HOME": str(tmp_path / "home"), "PATH": "/usr/bin:/bin", "CLAUDE_PROJECT_DIR": str(proj)}
     monkeypatch.setattr(tp, "MANAGED_SETTINGS_PATHS", ())
     assert tp.decide({"cwd": str(proj)}, env)[0] == tp.NOOP_DISABLED
 
     cli.write_claude_wiring({"name": "test", "approval": {}})
-    assert not (proj / ".state" / "disabled").exists()
+    assert not (state_dir(proj) / "disabled").exists()
     assert tp.decide({"cwd": str(proj)}, env)[0] == tp.NOOP_ALREADY_WIRED
 
 
@@ -761,7 +773,7 @@ def test_disable_without_state_writes_no_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_stop_authorizer", lambda _cfg: False)
     monkeypatch.setattr(cli, "managed_mode", lambda _cfg: False)
     cli.cmd_disable(types.SimpleNamespace())
-    assert not (proj / ".state").exists()
+    assert not (proj / ".state").exists() and not state_dir(proj).exists()
 
 
 @pytest.mark.parametrize("matcher", ["Read", "Read|Edit", "mcp__.*"])
@@ -780,10 +792,19 @@ def test_partial_wiring_never_disables_plugin(tmp_path, env, matcher):
 @pytest.mark.parametrize("name", ["project", "My_Project !", "a" * 80])
 def test_plugin_state_matches_cli_and_survives_migration(tmp_path, env, monkeypatch, name):
     from tenuo_claude_code import paths
-    proj = make_project(tmp_path / name)
+    proj = make_project(tmp_path / name, in_project_state=True)
     monkeypatch.setenv("HOME", env["HOME"])
     monkeypatch.delenv("TENUO_STATE_DIR", raising=False)
     assert tp.project_state_dir(proj, env) == paths.project_state_dir(proj)
+    # State inside the project is where an older version left it. The plugin
+    # does not act on it; `refresh` moves it to the user's home.
+    before = {**PRE_EVENT, "cwd": str(proj)}
+    assert tp.decide(before, env)[0] == tp.NOOP_STATE_IN_PROJECT
+    for no_py in (env, {**env, "TENUO_PLUGIN_PYTHON": "/missing"}):
+        silent = run_hook("pre", before, no_py, proj) if no_py is env else subprocess.run(
+            [str(HOOK_SH), "pre"], input=json.dumps(before).encode(), capture_output=True,
+            cwd=str(proj), env=no_py, timeout=60)
+        assert silent.returncode == 0 and silent.stdout == b""
     state = paths.home_state_dir(proj)
     state.parent.mkdir(parents=True, exist_ok=True)
     (proj / ".state").rename(state)
@@ -810,4 +831,70 @@ def test_plugin_state_override(tmp_path, env, monkeypatch):
     monkeypatch.setenv("TENUO_STATE_DIR", str(state))
     assert tp.project_state_dir(proj, env) == paths.project_state_dir(proj) == state
     (state / "disabled").write_text("disabled")
+    # A directory with no state.json is not a set-up project, wherever it is.
+    assert tp.decide({"cwd": str(proj)}, env)[0] == tp.NOOP_NOT_INITIALIZED
+    (state / "state.json").write_text("{}")
     assert tp.decide({"cwd": str(proj)}, env)[0] == tp.NOOP_DISABLED
+
+
+def test_state_a_project_carries_is_not_setup(tmp_path, env, monkeypatch):
+    """A repository can ship a policy, a `.state` folder and a `.venv`. The
+    plugin must run nothing of theirs and enforce nothing on their say-so."""
+    proj = make_project(tmp_path / "cloned", in_project_state=True)
+    ran = tmp_path / "ran"
+    fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f"echo ran > {ran}")
+    session = {**env, "CLAUDE_PROJECT_DIR": str(proj)}
+    event = {**PRE_EVENT, "cwd": str(proj)}
+
+    assert tp.decide(event, session)[0] == tp.NOOP_STATE_IN_PROJECT
+    for mode in ("pre", "post"):
+        proc = run_hook(mode, event, session, proj)
+        assert proc.returncode == 0 and proc.stdout == b""
+    line = json.loads(run_hook("session-start", {"cwd": str(proj)}, session, proj).stdout)["systemMessage"]
+    assert "inside the project" in line and "NOT governed" in line
+    assert not ran.exists()
+
+    # The same through a link, or through TENUO_STATE_DIR pointing back in.
+    linked = make_project(tmp_path / "linked", state=False)
+    planted = tmp_path / "planted"
+    planted.mkdir()
+    (planted / "state.json").write_text("{}")
+    (linked / ".state").symlink_to(planted)
+    assert tp.decide({"cwd": str(linked)}, env)[0] == tp.NOOP_STATE_IN_PROJECT
+    inward = {**env, "TENUO_STATE_DIR": str(proj / ".state")}
+    assert tp.decide(event, inward)[0] == tp.NOOP_STATE_IN_PROJECT
+
+    # Hooks the CLI wired into Claude's settings are Claude Code's to run; the
+    # plugin still reports them as what governs the project.
+    wire_like_bootstrap(monkeypatch, proj, tmp_path / "home")
+    assert tp.decide(event, session)[0] == tp.NOOP_ALREADY_WIRED
+
+
+def test_hooks_use_the_users_cli_before_the_projects_copy(tmp_path, env, home):
+    proj = make_project(tmp_path / "p")
+    local = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", "exit 0")
+    event = {"cwd": str(proj)}
+    # Only the project's copy exists, in a project this user set up: use it.
+    assert tp.decide(event, env)[2] == str(local)
+    # With a CLI of the user's own, that one wins.
+    mine = fake_cli(home / ".local" / "bin" / "tenuo-claude", "exit 0")
+    assert tp.decide(event, env)[2] == str(mine)
+    assert tp.resolve_cli(proj, env) == (str(mine), None)
+
+
+def test_hook_wrapper_skips_an_interpreter_inside_the_project(tmp_path, env):
+    """`python3` is looked up on PATH. One that sits inside the project is the
+    project's file, and is not what should run the launcher."""
+    ran = tmp_path / "ran"
+    event = json.dumps(PRE_EVENT).encode()
+    for name, set_up in (("cloned", False), ("mine", True)):
+        proj = make_project(tmp_path / name, state=set_up)
+        fake_cli(proj / "bin" / "python3", f"echo ran > {ran}")
+        path = f"{proj / 'bin'}:{Path(sys.executable).parent}:{env['PATH']}"
+        proc = subprocess.run([str(HOOK_SH), "pre"], input=event, capture_output=True, cwd=str(proj),
+                              env={**env, "PATH": path, "CLAUDE_PROJECT_DIR": str(proj)}, timeout=60)
+        assert not ran.exists()
+        if set_up:      # the real launcher ran: governed, no CLI, so it denies
+            assert_deny(proc, "CLI was not found")
+        else:
+            assert proc.returncode == 0 and proc.stdout == b""

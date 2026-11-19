@@ -53,6 +53,7 @@ Ask in your own words; Claude starts the matching skill and asks before it insta
 
 - `/tenuo:status` shows what is wrong; `tenuo-claude check` in a terminal runs the full preflight. More cases: [docs/TROUBLESHOOTING.md](https://github.com/tenuo-ai/tenuo-claude-code/blob/main/docs/TROUBLESHOOTING.md).
 - A governed project whose `tenuo-claude` CLI is missing denies tool calls until the CLI is back or you run `tenuo-claude disable`. This is deliberate: a broken setup must not fail open.
+- A project counts as set up only when its state is in your home directory (`~/.tenuo/projects/…`), where `tenuo-claude` puts it. A `.state` folder, a `.venv` copy of the CLI or a `python3` that comes with a project is not run and changes nothing until you set the project up yourself.
 - `tenuo-claude disable` turns governance off for a project; `tenuo-claude uninstall` also deletes its keys and receipts. Removing the plugin alone does not remove hook entries the CLI wrote.
 - Questions and bugs: [GitHub issues](https://github.com/tenuo-ai/tenuo-claude-code/issues). Security reports: [SECURITY.md](https://github.com/tenuo-ai/tenuo-claude-code/blob/main/SECURITY.md).
 

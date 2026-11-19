@@ -12,10 +12,12 @@ Decision table for ``pre`` (PreToolUse):
        the hook cwd, or any parent)            -> no output, exit 0 (neutral)
     2. ``TENUO_PROJECT_DIR`` is set but has no ``tenuo.yaml``
                                                -> deny (explicit opt-in is broken)
-    3. Project found, but the state directory is missing (policy present, never
-       initialized)                            -> no output, exit 0 (neutral)
-    4. Project found, the state directory’s ``disabled`` marker exists (``tenuo-claude disable``)
+    3. Project found, but this user has not set it up on this machine: there is
+       no state directory with ``state.json`` outside the project. A ``.state``
+       folder inside the project does not count, whoever put it there
                                                -> no output, exit 0 (neutral)
+    4. Set up, and the state directory's ``disabled`` marker exists
+       (``tenuo-claude disable``)              -> no output, exit 0 (neutral)
     5. Tenuo hooks already wired by ``tenuo-claude init``/``bootstrap`` in
        project, user, or managed settings      -> no output, exit 0 (the wired
                                                   hook enforces; avoids double
@@ -24,8 +26,14 @@ Decision table for ``pre`` (PreToolUse):
     7. Opted in but ``tenuo-claude`` missing, crashing, timing out, or printing
        something that is not a hook decision   -> deny (fail closed)
 
-"Opted in" means rows 1 to 5 did not apply: a ``tenuo.yaml`` plus initialized
-the state directory with no bootstrap wiring and no disable marker.
+"Opted in" means rows 1 to 5 did not apply: a ``tenuo.yaml``, set up by this
+user, with no bootstrap wiring and no disable marker.
+
+Which ``tenuo-claude`` runs: the user's own (the override, ``PATH``, the uv and
+pipx locations) comes first. A copy inside the project is used only when there
+is no other and the user has set the project up; before that it is never run.
+Paths are made absolute first, and "inside the project" is judged both by where
+a file sits and by what it points to.
 
 A deny is the same JSON as the CLI's fail-closed launcher guard
 (``_GUARD_DENY_JSON``) with an actionable reason, printed to stdout, the reason
@@ -90,6 +98,7 @@ POST_TIMEOUT_DEFAULT = 20.0
 # Decision labels (returned by `decide`, asserted in tests).
 NOOP_NO_PROJECT = "noop:no-project"
 NOOP_NOT_INITIALIZED = "noop:not-initialized"
+NOOP_STATE_IN_PROJECT = "noop:state-in-project"
 NOOP_DISABLED = "noop:disabled"
 NOOP_ALREADY_WIRED = "noop:already-wired"
 DELEGATE = "delegate"
@@ -288,6 +297,70 @@ def project_state_dir(root: Path, env: dict) -> Path:
     return state
 
 
+def _inside(path: Path, root: Path) -> bool:
+    """True when ``path`` belongs to ``root``, by where it sits or by what it
+    points to. A link inside the project to a file outside it is still the
+    project's, and so is a link outside it to a file inside it."""
+    def spellings(value) -> set[str]:
+        raw = os.path.expanduser(str(value))
+        return {os.path.abspath(raw).casefold(), os.path.realpath(raw).casefold()}
+
+    for base in spellings(root):
+        base = base.rstrip(os.sep)
+        for candidate in spellings(path):
+            if candidate == base or candidate.startswith(base + os.sep):
+                return True
+    return False
+
+
+def user_state_dir(root: Path, env: dict) -> Path | None:
+    """The project's state directory, when this user set the project up here.
+
+    The evidence is ``state.json`` in a state directory outside the project,
+    which ``tenuo-claude init`` writes and a repository cannot ship. An
+    in-project ``.state``, or a link from the project to somewhere else, does
+    not count. Returns None otherwise.
+    """
+    override = (env.get("TENUO_STATE_DIR") or "").strip()
+    state = Path(os.path.expanduser(override)) if override else project_state_dir(root, env)
+    if (state / "state.json").is_file() and not _inside(state, root):
+        return state
+    return None
+
+
+def _set_up_by_this_user(root: Path, env: dict) -> bool:
+    return user_state_dir(root, env) is not None
+
+
+def _project_carries_state(root: Path, env: dict) -> bool:
+    """True when the project has a state folder of its own (older layout, a
+    ``TENUO_STATE_DIR`` pointing into it, or files a repository shipped)."""
+    override = (env.get("TENUO_STATE_DIR") or "").strip()
+    if override and _inside(Path(os.path.expanduser(override)), root):
+        return os.path.isdir(os.path.expanduser(override))
+    return (root / STATE_DIR).exists() or (root / STATE_DIR).is_symlink()
+
+
+def resolve_cli(root: Path | None, env: dict) -> tuple[str | None, str | None]:
+    """Pick the ``tenuo-claude`` to run. Returns ``(cli, unused_project_copy)``.
+
+    The user's own CLI wins. A copy inside the project is the fallback, and
+    only in a project this user has set up; otherwise it is returned as the
+    second value, to be named but not run.
+    """
+    if root is None:
+        return find_cli(None, env), None
+    mine = find_cli(None, env, skip=lambda candidate: _inside(candidate, root))
+    if mine is not None:
+        return mine, None
+    local = find_cli(root, env)
+    if local is None:
+        return None, None
+    if not _inside(Path(local), root) or _set_up_by_this_user(root, env):
+        return local, None
+    return None, local
+
+
 def decide(event: dict, env: dict) -> tuple[str, Path | None, str | None, str | None]:
     """Return ``(decision, project_root, cli_path, message)`` for a hook event."""
     root, error = find_project(event, env)
@@ -295,14 +368,21 @@ def decide(event: dict, env: dict) -> tuple[str, Path | None, str | None, str | 
         return DENY_BAD_PROJECT_DIR, None, None, error
     if root is None:
         return NOOP_NO_PROJECT, None, None, None
-    state = project_state_dir(root, env)
-    if not state.is_dir():
+    state = user_state_dir(root, env)
+    if state is None:
+        # Not set up by this user on this machine, so the plugin runs nothing
+        # for this project. Hooks the CLI wired into Claude's settings are
+        # Claude Code's to run, and still do the enforcing where they exist.
+        if already_wired(root, env):
+            return NOOP_ALREADY_WIRED, root, None, None
+        if _project_carries_state(root, env):
+            return NOOP_STATE_IN_PROJECT, root, None, None
         return NOOP_NOT_INITIALIZED, root, None, None
     if (state / DISABLED_MARKER).exists():
         return NOOP_DISABLED, root, None, None
     if already_wired(root, env):
         return NOOP_ALREADY_WIRED, root, None, None
-    cli = find_cli(root, env)
+    cli, _unused = resolve_cli(root, env)
     if cli is None:
         return DENY_CLI_MISSING, root, None, (
             f"{root} is governed by Tenuo but the tenuo-claude CLI was not found "
@@ -392,7 +472,7 @@ def run_post(raw: bytes, env: dict) -> int:
 
 def status_line(event: dict, env: dict) -> str:
     decision, root, _cli, message = decide(event, env)
-    cli_found = find_cli(root, env) is not None
+    cli_found = resolve_cli(root, env)[0] is not None
     install = "" if cli_found else f" (install first: {INSTALL_HINT})"
     if decision == NOOP_NO_PROJECT:
         return ("Tenuo not configured here; Claude Code permissions apply as usual. "
@@ -400,6 +480,11 @@ def status_line(event: dict, env: dict) -> str:
     if decision == NOOP_NOT_INITIALIZED:
         return (f"Tenuo: {root / POLICY_FILE} found but not initialized, so tool calls are "
                 f"NOT governed yet. Run: tenuo-claude bootstrap{install}")
+    if decision == NOOP_STATE_IN_PROJECT:
+        return (f"Tenuo: {root} keeps a Tenuo state folder inside the project, which the plugin "
+                "does not act on, so tool calls are NOT governed by the plugin here. If you set "
+                "this project up with an older version, run `tenuo-claude refresh` from your "
+                f"own terminal; otherwise set it up with {SETUP_HINT}{install}")
     if decision == NOOP_DISABLED:
         return (f"Tenuo: governance disabled for {root} (tenuo-claude disable). "
                 f"Re-enable: tenuo-claude up{install}")
@@ -445,35 +530,6 @@ def run_session_start(raw: bytes, env: dict) -> int:
     return 0
 
 
-def _inside(path: Path, root: Path) -> bool:
-    """True when ``path`` belongs to ``root``, by where it sits or by what it
-    points to. A link inside the project to a file outside it is still the
-    project's, and so is a link outside it to a file inside it."""
-    def spellings(value) -> set[str]:
-        raw = os.path.expanduser(str(value))
-        return {os.path.abspath(raw).casefold(), os.path.realpath(raw).casefold()}
-
-    for base in spellings(root):
-        base = base.rstrip(os.sep)
-        for candidate in spellings(path):
-            if candidate == base or candidate.startswith(base + os.sep):
-                return True
-    return False
-
-
-def _set_up_by_this_user(root: Path, env: dict) -> bool:
-    """True when this user has initialized the project on this machine.
-
-    The evidence is ``state.json`` in a state directory outside the project,
-    which ``tenuo-claude init`` writes and a repository cannot ship. An
-    in-project ``.state``, or a link from the project to somewhere else, does
-    not count.
-    """
-    override = (env.get("TENUO_STATE_DIR") or "").strip()
-    state = Path(os.path.expanduser(override)) if override else project_state_dir(root, env)
-    return (state / "state.json").is_file() and not _inside(state, root)
-
-
 def run_cli(args: list[str], env: dict) -> int:
     """Run ``tenuo-claude <args>`` in the governed project (for plugin skills).
 
@@ -497,12 +553,11 @@ def run_cli(args: list[str], env: dict) -> int:
         # Broken explicit opt-in: the hooks deny every call until it is fixed.
         print(f"Plugin: {status_line({}, env)}")
         return 0
-    # No policy yet: the project is the session's directory. Look for the CLI
-    # there too, or a CLI in the project's own virtualenv is reported missing
-    # and setup installs a second one.
     here = Path(env.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    cli = find_cli(root if root is not None else here, env)
     if root is None:
+        # No policy yet, so nothing is run; only say where a CLI is. One in the
+        # project's own virtualenv is worth naming, or setup installs a second.
+        cli = find_cli(here, env)
         cli_note = f"found at {cli}" if cli else f"not installed (install: {INSTALL_HINT})"
         print(f"No {POLICY_FILE} in this directory or any parent: Tenuo is not set up here. "
               f"To set it up: {SETUP_HINT}. tenuo-claude CLI: {cli_note}.")
@@ -520,20 +575,12 @@ def run_cli(args: list[str], env: dict) -> int:
         return 0
     print(f"Plugin: {status_line({}, env)}")
     print(f"Project: {root}")
-    # A skill runs this without asking. Until the user has set the project up on
-    # this machine (state under their home directory, which a repository cannot
-    # ship), a copy of the CLI inside the project is somebody else's file: say
-    # where it is, but do not run it.
-    if cli is not None and _inside(Path(cli), root) and not _set_up_by_this_user(root, env):
-        # Not the override, not PATH, not anything else that leads back into
-        # the project.
-        user_cli = find_cli(None, env, skip=lambda candidate: _inside(candidate, root))
-        if user_cli is None:
-            print(f"The only tenuo-claude found is inside this project ({cli}). The plugin "
-                  "does not run a project's own copy before the project is set up on this "
-                  f"machine. Run `{cli} {' '.join(args)}` yourself, or {SETUP_HINT}.")
-            return 0
-        cli = user_cli
+    cli, project_copy = resolve_cli(root, env)
+    if cli is None and project_copy is not None:
+        print(f"The only tenuo-claude found is inside this project ({project_copy}). The plugin "
+              "does not run a project's own copy before the project is set up on this "
+              f"machine. Run `{project_copy} {' '.join(args)}` yourself, or {SETUP_HINT}.")
+        return 0
     if cli is None:
         # The project exists; only the inspection is unavailable. Governance
         # state is whatever the Plugin line above says.
