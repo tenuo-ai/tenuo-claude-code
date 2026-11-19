@@ -829,60 +829,64 @@ def refresh_subwarrants(cfg: dict) -> None:
     delegation is what the audit trail shows. Re-minted on every `up` so the
     children always chain to the current session warrant. Works identically for
     locally-minted and Cloud-issued session warrants.
-    """
-    for stale in STATE.glob("subwarrant_*.b64"):
-        stale.unlink()
-    roles = subagent_roles(cfg)
-    if not roles:
-        return
-    from tenuo import SigningKey, Warrant
-    from tenuo.exceptions import UntrustedRoot
-    from tenuo_core import encode_warrant_stack
 
-    try:
-        parent = Warrant.from_base64(WARRANT.read_text())
-    except UntrustedRoot as e:
-        raise SystemExit(
-            f"Warrant trust verification failed: {e}\n"
-            "The session warrant is not signed by a trusted issuer.\n"
-            "This may indicate a Cloud trust policy change.\n"
-            "Fix: tenuo-claude check  (verify warrant validity)"
-        ) from e
-    holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
-    parent_caps = set((parent.capabilities or {}).keys())
-    for role, rc in roles.items():
-        rc = rc or {}
-        caps = []
-        for tool in rc.get("tools") or []:
-            if tool not in TOOL_DEFAULTS:
-                raise SystemExit(f"subagents.{role}: unknown tool '{tool}'")
-            caps.append(TOOL_DEFAULTS[tool][0])
-        missing = [c for c in caps if c not in parent_caps]
-        if missing:
-            raise SystemExit(
-                f"subagents.{role}: {missing} not granted by the session warrant. "
-                "A subagent can't exceed the parent — add the tool to `enforce` first.")
-        builder = parent.attenuate_builder()
-        builder.inherit_all()
-        builder.retain_tools(caps)  # keep this subset with the parent's constraints
-        builder.with_intent(f"subagent:{role}")
-        if rc.get("ttl_seconds"):
-            builder.with_ttl(int(rc["ttl_seconds"]))
+    Runs under the shared state lock, so it cannot read a session warrant that
+    automatic renewal is replacing and then write children of the old one.
+    """
+    with _state_lock():
+        for stale in STATE.glob("subwarrant_*.b64"):
+            stale.unlink()
+        roles = subagent_roles(cfg)
+        if not roles:
+            return
+        from tenuo import SigningKey, Warrant
+        from tenuo.exceptions import UntrustedRoot
+        from tenuo_core import encode_warrant_stack
+
         try:
-            child = builder.delegate(holder)
-        except Exception as e:
-            from tenuo.exceptions import DelegationAuthorityError
-            if isinstance(e, DelegationAuthorityError) and "signing key mismatch" in str(e):
+            parent = Warrant.from_base64(WARRANT.read_text())
+        except UntrustedRoot as e:
+            raise SystemExit(
+                f"Warrant trust verification failed: {e}\n"
+                "The session warrant is not signed by a trusted issuer.\n"
+                "This may indicate a Cloud trust policy change.\n"
+                "Fix: tenuo-claude check  (verify warrant validity)"
+            ) from e
+        holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
+        parent_caps = set((parent.capabilities or {}).keys())
+        for role, rc in roles.items():
+            rc = rc or {}
+            caps = []
+            for tool in rc.get("tools") or []:
+                if tool not in TOOL_DEFAULTS:
+                    raise SystemExit(f"subagents.{role}: unknown tool '{tool}'")
+                caps.append(TOOL_DEFAULTS[tool][0])
+            missing = [c for c in caps if c not in parent_caps]
+            if missing:
                 raise SystemExit(
-                    "Holder signing key does not match the session warrant.\n"
-                    "Local .state/holder_key.b64 drifted from the Cloud-claimed agent key.\n"
-                    "Fix: tenuo-admin setup  (will re-claim the holder key)"
-                ) from e
-            raise
-        # Persist the full chain (parent..child): a delegated warrant must be
-        # presented as a WarrantStack so the authorizer can verify to the root.
-        write_secret(subwarrant_path(role),
-                     encode_warrant_stack([parent, child]))
+                    f"subagents.{role}: {missing} not granted by the session warrant. "
+                    "A subagent can't exceed the parent — add the tool to `enforce` first.")
+            builder = parent.attenuate_builder()
+            builder.inherit_all()
+            builder.retain_tools(caps)  # keep this subset with the parent's constraints
+            builder.with_intent(f"subagent:{role}")
+            if rc.get("ttl_seconds"):
+                builder.with_ttl(int(rc["ttl_seconds"]))
+            try:
+                child = builder.delegate(holder)
+            except Exception as e:
+                from tenuo.exceptions import DelegationAuthorityError
+                if isinstance(e, DelegationAuthorityError) and "signing key mismatch" in str(e):
+                    raise SystemExit(
+                        "Holder signing key does not match the session warrant.\n"
+                        "Local .state/holder_key.b64 drifted from the Cloud-claimed agent key.\n"
+                        "Fix: tenuo-admin setup  (will re-claim the holder key)"
+                    ) from e
+                raise
+            # Persist the full chain (parent..child): a delegated warrant must be
+            # presented as a WarrantStack so the authorizer can verify to the root.
+            write_secret(subwarrant_path(role),
+                         encode_warrant_stack([parent, child]))
 
 
 def _parse_env_value(raw: str) -> str:
@@ -4150,7 +4154,8 @@ def cmd_up(_args) -> None:
     # `up` is the documented way back from `disable`: re-arm the plugin hooks.
     set_disabled_marker(False)
     refreshed = False
-    if warrant_expired() or (use_trigger and not WARRANT.exists()):
+    remint = not getattr(_args, "no_remint", False)
+    if remint and (warrant_expired() or (use_trigger and not WARRANT.exists())):
         # Re-apply tenuo.yaml (reuse issuer locally; re-fire trigger on Cloud).
         # Trust anchor unchanged — no container restart strictly required for the
         # warrant itself (it rides in every request header).
@@ -4525,18 +4530,26 @@ def cmd_revoke(_args) -> None:
               f"    -d '{{\"warrant_id\":\"{wid}\",\"reason\":\"revoked\"}}'\n"
               f"The authorizer pulls the new SRL within one heartbeat; next call is denied.")
         return
-    from tenuo import SigningKey, SignedRevocationList
+    from tenuo import SigningKey, SignedRevocationList, Warrant
 
     issuer = SigningKey.from_bytes(base64.b64decode(ISSUER_KEY.read_text()))
-    b = SignedRevocationList.builder()
-    b.revoke(wid)
-    b.version(int(time.time()))
-    SRL.write_bytes(bytes(b.build(issuer).to_bytes()))
+    with _state_lock():
+        # Stop renewal first, then revoke whatever warrant is on disk now. A
+        # tool call renewing at this moment waits on the lock, and finds the
+        # block when it gets it; it cannot slip a fresh, unrevoked id past us.
+        set_renewal_block(True)
+        with contextlib.suppress(Exception):
+            wid = Warrant.from_base64(WARRANT.read_text()).id
+        b = SignedRevocationList.builder()
+        b.revoke(wid)
+        b.version(int(time.time()))
+        SRL.write_bytes(bytes(b.build(issuer).to_bytes()))
     print(f"Revoked {wid} locally. Restarting authorizer to load the SRL…")
     cmd_down(_args)
-    cmd_up(_args)
-    # A revoked warrant must not come back by itself when it expires.
-    set_renewal_block(True)
+    # Restart only: `up` would otherwise mint a new warrant if this one had
+    # already expired, which is the opposite of revoking it.
+    restart = argparse.Namespace(**{**vars(_args), "no_remint": True})
+    cmd_up(restart)
     print("Automatic renewal is off for this project until you run `tenuo-claude refresh`.")
 
 

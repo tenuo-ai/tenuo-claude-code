@@ -140,16 +140,23 @@ def test_subagent_warrants_follow_the_new_session_warrant(local, monkeypatch):
     assert not child.is_expired()
 
 
-def test_a_revoked_warrant_does_not_come_back(local, monkeypatch):
+def test_a_revoked_warrant_does_not_come_back(local, monkeypatch, capsys):
     """`revoke` kills one warrant id; renewal must not mint a fresh one in its place."""
     import argparse
-    cli.STATE_JSON.write_text(json.dumps({"warrant_id": current().id}))
+    on_disk = current().id
+    # state.json can lag behind the warrant file; the file is what gets revoked.
+    cli.STATE_JSON.write_text(json.dumps({"warrant_id": "tnu_wrt_stale"}))
     monkeypatch.setattr(cli, "load_config", lambda: local)
     monkeypatch.setattr(cli, "cloud_creds", lambda cfg: {})
     monkeypatch.setattr(cli, "runtime_env", lambda: {})
     monkeypatch.setattr(cli, "cmd_down", lambda args: None)
-    monkeypatch.setattr(cli, "cmd_up", lambda args: None)
+    restarts = []
+    monkeypatch.setattr(cli, "cmd_up", lambda args: restarts.append(
+        (getattr(args, "no_remint", False), (cli.STATE / cli.RENEWAL_BLOCK_NAME).exists())))
     cli.cmd_revoke(argparse.Namespace())
+    assert f"Revoked {on_disk} locally" in capsys.readouterr().out
+    # The restart must not mint, and renewal was already blocked when it ran.
+    assert restarts == [(True, True)]
     before = cli.WARRANT.read_text()
     due(monkeypatch)
     assert cli.renew_session_warrant_if_due(local) is None
@@ -159,6 +166,62 @@ def test_a_revoked_warrant_does_not_come_back(local, monkeypatch):
     # An explicit re-mint is the operator saying "carry on".
     cli.remint_session(local)
     assert cli.local_auto_renew_applies(local) is True
+
+
+def test_a_renewal_racing_a_revoke_loses(local, monkeypatch):
+    """A tool call that saw the warrant as due, then waited on the lock while
+    `revoke` ran, must find the block and mint nothing."""
+    import contextlib
+    real_lock = cli._state_lock
+
+    @contextlib.contextmanager
+    def lock_after_a_concurrent_revoke():
+        cli.set_renewal_block(True)        # what `revoke` does while it holds the lock
+        with real_lock():
+            yield
+
+    before = cli.WARRANT.read_text()
+    due(monkeypatch)
+    monkeypatch.setattr(cli, "_state_lock", lock_after_a_concurrent_revoke)
+    assert cli.renew_session_warrant_if_due(local) is None
+    assert cli.WARRANT.read_text() == before
+
+
+def test_up_without_remint_leaves_an_expired_warrant_alone(local, monkeypatch):
+    """The restart inside `revoke` must not bring authority back."""
+    import argparse
+    monkeypatch.setattr(cli, "load_config", lambda: local)
+    monkeypatch.setattr(cli, "cloud_creds", lambda cfg: {})
+    monkeypatch.setattr(cli, "_assert_managed_runtime", lambda cfg, use_trigger: None)
+    monkeypatch.setattr(cli, "set_disabled_marker", lambda disabled: None)
+    monkeypatch.setattr(cli, "warrant_expired", lambda: True)
+    monkeypatch.setattr(cli, "authorizer_running", lambda cfg: True)
+    monkeypatch.setattr(cli, "cmd_status", lambda args: None)
+    minted = []
+    monkeypatch.setattr(cli, "refresh_policy", lambda cfg=None: minted.append("refresh"))
+    monkeypatch.setattr(cli, "generate", lambda cfg: minted.append("generate"))
+    cli.cmd_up(argparse.Namespace(no_remint=True))
+    assert minted == []
+    cli.cmd_up(argparse.Namespace())
+    assert minted == ["refresh"]
+
+
+def test_subagent_refresh_takes_the_state_lock(local, monkeypatch):
+    """Every caller of refresh_subwarrants is serialized with renewal."""
+    import contextlib
+    cfg = {**local, "subagents": {"researcher": {"tools": ["Read"]}}}
+    entered = []
+    real_lock = cli._state_lock
+
+    @contextlib.contextmanager
+    def counting_lock():
+        entered.append(True)
+        with real_lock():
+            yield
+
+    monkeypatch.setattr(cli, "_state_lock", counting_lock)
+    cli.refresh_subwarrants(cfg)
+    assert entered and cli.subwarrant_path("researcher").exists()
 
 
 def test_renewal_does_not_undo_a_refresh_that_narrowed_the_policy(local, make_cfg, bound, monkeypatch):
