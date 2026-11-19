@@ -476,6 +476,60 @@ def test_manifests_are_consistent():
     assert not (PLUGIN / "bin").exists()
 
 
+def run_wrapper(path: str, cwd: Path, env: dict, **extra) -> subprocess.CompletedProcess:
+    """The hook wrapper as Claude Code runs it: no pinned interpreter."""
+    return subprocess.run([str(HOOK_SH), "pre"], input=json.dumps(PRE_EVENT).encode(),
+                          capture_output=True, cwd=str(cwd), timeout=60,
+                          env={**env, "PATH": path, **extra})
+
+
+def test_hook_wrapper_judges_interpreters_against_the_governing_project(tmp_path, env):
+    """The policy can sit above the session directory, or be named by
+    TENUO_PROJECT_DIR. An interpreter anywhere in that project is the project's."""
+    ran = tmp_path / "ran"
+    own_python = fake_cli(tmp_path / "pybin" / "python3", f'exec "{sys.executable}" "$@"')
+    repo = make_project(tmp_path / "repo", state=False)
+    fake_cli(repo / "bin" / "python3", f"echo ran > {ran}")
+    sub = repo / "sub"
+    sub.mkdir()
+    path = f"{repo / 'bin'}:{own_python.parent}:{env['PATH']}"
+
+    # Session in a subdirectory of the governed project.
+    proc = run_wrapper(path, sub, env, CLAUDE_PROJECT_DIR=str(sub))
+    assert proc.returncode == 0 and proc.stdout == b"" and not ran.exists()
+
+    # Session somewhere else, project named by the override.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    proc = run_wrapper(path, elsewhere, env, CLAUDE_PROJECT_DIR=str(elsewhere),
+                       TENUO_PROJECT_DIR=str(repo))
+    assert not ran.exists()
+    assert proc.returncode == 0 and proc.stdout == b""
+
+
+def test_hook_wrapper_follows_a_linked_interpreter_into_the_project(tmp_path, env):
+    """A `python3` outside the project that is a link to a file inside it."""
+    ran = tmp_path / "ran"
+    own_python = fake_cli(tmp_path / "pybin" / "python3", f'exec "{sys.executable}" "$@"')
+    proj = make_project(tmp_path / "cloned", state=False)
+    target = fake_cli(proj / "tools" / "run-me", f"echo ran > {ran}")
+    outside = tmp_path / "outside-bin"
+    outside.mkdir()
+    (outside / "python3").symlink_to(target)
+    # A chain of links, ending in the project.
+    chained = tmp_path / "chained-bin"
+    chained.mkdir()
+    (chained / "python3").symlink_to(outside / "python3")
+    # A link that goes nowhere is dropped, not run and not fatal.
+    broken = tmp_path / "broken-bin"
+    broken.mkdir()
+    (broken / "python3").symlink_to(tmp_path / "missing")
+    path = f"{chained}:{outside}:{broken}:{own_python.parent}:{env['PATH']}"
+    proc = run_wrapper(path, proj, env, CLAUDE_PROJECT_DIR=str(proj))
+    assert not ran.exists()
+    assert proc.returncode == 0 and proc.stdout == b""
+
+
 def run_skill_command(args: list[str], env: dict, cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(SCRIPTS / "tenuo_plugin.py"), "run", *args],
                           capture_output=True, text=True, cwd=str(cwd), env=env, timeout=60)
