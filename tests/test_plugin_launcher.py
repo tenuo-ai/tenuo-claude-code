@@ -507,6 +507,53 @@ def test_hook_wrapper_judges_interpreters_against_the_governing_project(tmp_path
     assert proc.returncode == 0 and proc.stdout == b""
 
 
+HELPERS = ("readlink", "dirname", "basename", "sed", "tr", "cut", "sha256sum", "shasum", "pwd", "printf")
+
+
+def test_hook_wrapper_finds_its_own_helpers_on_a_system_path(tmp_path, env):
+    """The wrapper screens PATH, so it must not look its own helpers up there:
+    a project's `bin/readlink` would run before anything was decided."""
+    ran = tmp_path / "ran"
+    own_python = fake_cli(tmp_path / "pybin" / "python3", f'exec "{sys.executable}" "$@"')
+    linked = tmp_path / "linked-bin"
+    linked.mkdir()
+    (linked / "python3").symlink_to(own_python)        # makes the wrapper follow a link
+
+    def with_helpers(project: Path) -> str:
+        for helper in HELPERS:
+            fake_cli(project / "bin" / helper, f"echo {helper} >> {ran}")
+        return f"{project / 'bin'}:{linked}:{env['PATH']}"
+
+    # Not set up: the launcher runs with the user's interpreter and stays neutral.
+    cloned = make_project(tmp_path / "cloned", state=False)
+    proc = run_wrapper(with_helpers(cloned), cloned, env, CLAUDE_PROJECT_DIR=str(cloned))
+    assert proc.returncode == 0 and proc.stdout == b""
+    assert not ran.exists()
+
+    # Set up, but no interpreter: the shell fallback hashes the project path and
+    # denies, still without touching the project's helpers.
+    mine = make_project(tmp_path / "mine")
+    proc = run_wrapper(with_helpers(mine), mine, env, CLAUDE_PROJECT_DIR=str(mine),
+                       TENUO_PLUGIN_PYTHON="/missing")
+    assert_deny(proc, "python3 was not found")
+    assert not ran.exists()
+
+
+def test_hook_wrapper_finds_the_policy_through_a_linked_session_directory(tmp_path, env):
+    """Started in a link to `repo/sub`, the policy is still `repo/tenuo.yaml`."""
+    ran = tmp_path / "ran"
+    own_python = fake_cli(tmp_path / "pybin" / "python3", f'exec "{sys.executable}" "$@"')
+    repo = make_project(tmp_path / "repo", state=False)
+    fake_cli(repo / "bin" / "python3", f"echo ran > {ran}")
+    (repo / "sub").mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(repo / "sub")
+    path = f"{repo / 'bin'}:{own_python.parent}:{env['PATH']}"
+    proc = run_wrapper(path, link, env, CLAUDE_PROJECT_DIR=str(link), PWD=str(link))
+    assert proc.returncode == 0 and proc.stdout == b""
+    assert not ran.exists()
+
+
 def test_hook_wrapper_follows_a_linked_interpreter_into_the_project(tmp_path, env):
     """A `python3` outside the project that is a link to a file inside it."""
     ran = tmp_path / "ran"

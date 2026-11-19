@@ -11,8 +11,20 @@
 # on this machine. "The project" is the session directory and the directory
 # that holds the governing tenuo.yaml, which may be a parent of it or the one
 # TENUO_PROJECT_DIR names.
+#
+# The script's own helpers (readlink, sed, shasum and the like) are looked up
+# on a fixed system path, never on the caller's PATH: that PATH is the thing
+# being screened, and may lead into the project. The caller's PATH is kept
+# aside for finding the interpreter, and handed back to the launcher.
 # Usage: tenuo-hook pre|post|session-start
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+user_path=${PATH:-}
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:/run/current-system/sw/bin
+export PATH
+case "$0" in
+  */*) here=${0%/*} ;;
+  *) here=. ;;
+esac
+here=$(CDPATH= cd -- "$here" && pwd)
 mode=${1:-}
 nl='
 '
@@ -23,7 +35,7 @@ nl='
 try() {
   py=$1
   shift
-  "$py" "$here/tenuo_plugin.py" "$@"
+  PATH=$user_path "$py" "$here/tenuo_plugin.py" "$@"
   rc=$?
   if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
     exit "$rc"
@@ -35,7 +47,9 @@ physical_dir() {
 }
 
 # The governing project: the explicit override, else the nearest tenuo.yaml at
-# or above the session directory.
+# or above the session directory. The walk is done on the directory's real
+# path, as the launcher does it, and on the path as given: when the session
+# directory is a link, the two lead to different parents.
 find_root() {
   d=$1
   while [ -n "$d" ]; do
@@ -52,6 +66,7 @@ find_root() {
   return 1
 }
 root=""
+also_root=""
 if [ -n "${TENUO_PROJECT_DIR:-}" ]; then
   root=$TENUO_PROJECT_DIR
 else
@@ -59,7 +74,9 @@ else
   for start in "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
     [ -n "$start" ] && [ "$start" != "$seen" ] || continue
     seen=$start
-    root=$(find_root "$start") && break
+    real_start=$(physical_dir "$start") || real_start=$start
+    [ -n "$also_root" ] || [ "$real_start" = "$start" ] || also_root=$(find_root "$start") || also_root=""
+    root=$(find_root "$real_start") && break
     root=""
   done
 fi
@@ -70,7 +87,7 @@ proj=${CLAUDE_PROJECT_DIR:-$PWD}
 projp=$(physical_dir "$proj") || projp=$proj
 
 in_project() {
-  for base in "$proj" "$projp" "$root" "$rootp"; do
+  for base in "$proj" "$projp" "$root" "$rootp" "$also_root"; do
     [ -n "$base" ] || continue
     case "$1" in
       "$base"/*) return 0 ;;
@@ -123,7 +140,7 @@ consider() {
 if [ -n "${TENUO_PLUGIN_PYTHON:-}" ]; then
   # TENUO_PLUGIN_PYTHON pins the interpreter (no fallback to others).
   for py in $TENUO_PLUGIN_PYTHON; do
-    if command -v "$py" >/dev/null 2>&1; then
+    if PATH=$user_path command -v "$py" >/dev/null 2>&1; then
       try "$py" "$@"
     fi
   done
@@ -134,7 +151,7 @@ else
     old_ifs=$IFS
     IFS=:
     set -f
-    for dir in $PATH; do
+    for dir in $user_path; do
       IFS=$old_ifs
       case "$dir" in
         /*) consider "$dir/$name" "$@" ;;
