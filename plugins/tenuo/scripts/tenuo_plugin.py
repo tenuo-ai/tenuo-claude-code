@@ -65,9 +65,9 @@ INSTALL_HINT = f"uv tool install {PYPI_PACKAGE}"
 SETUP_HINT = "/tenuo:setup"
 # The only commands `run` passes to the CLI. All of them read; none writes
 # policy, wiring or state, starts or stops the authorizer, or installs anything.
-SKILL_COMMANDS = ("check", "status", "verify", "audit", "state-dir", "--version")
-# Flags `run` lets through, per command. `verify --deep` starts a live Claude
-# Code run, so it is not something to do unprompted.
+# `verify` is not among them: its self-test writes probe files into the project.
+SKILL_COMMANDS = ("check", "status", "audit", "state-dir", "--version")
+# Flags `run` lets through, per command.
 SKILL_FLAGS = {"audit": ("--verify", "--tail")}
 HINT_MARKER = "setup-hint-shown"
 CLOUD_FILES = ("cloud.env", "cloud_state.json")

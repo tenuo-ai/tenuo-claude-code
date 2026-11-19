@@ -32,8 +32,8 @@ A fresh setup should cost the user two approvals: the install and the bootstrap.
   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run check
   ```
 
-  It accepts `check`, `status`, `verify`, `state-dir`, `audit` and `--version`,
-  and refuses anything that changes state.
+  It accepts `check`, `status`, `state-dir`, `audit` and `--version`, and
+  refuses anything that changes state.
 - One plain command per call: no `&&`, `;`, pipes, redirects, shell variables
   or subshells. Each of those is refused or adds an approval.
 - Do not probe the environment, the home directory or the state directory with
@@ -41,7 +41,8 @@ A fresh setup should cost the user two approvals: the install and the bootstrap.
   exists and where, whether the CLI is installed and where, and whether Cloud
   credentials exist. Never display private keys or credential files.
 - Commands that change something (`uv tool install`, `bootstrap`, `init`,
-  `refresh`, `up`) run as ordinary commands with the CLI path the launcher
+  `refresh`, `up`, and `verify`, whose self-test writes probe files into the
+  project) run as ordinary commands with the CLI path the launcher
   printed, so the user sees and approves each one. Tie every `tenuo-claude`
   command that changes something to the project on the launcher's `Project:`
   line, so it cannot act on whatever directory the shell happens to be in:
@@ -102,8 +103,11 @@ A fresh setup should cost the user two approvals: the install and the bootstrap.
    Never use `--local`, overwrite the policy, or bootstrap an existing Cloud
    setup. Managed deployments require their administrator's
    service/configuration; do not replace them with a user-owned authorizer.
-5. Verify with the launcher: `check`, `verify`, then `status`. These check
-   on-disk state and the authorizer, not whether this session loaded the hooks.
+5. Verify with the launcher: `check`, then `status`. After a bootstrap, its own
+   output already ends with the policy self-test (`VERIFY OK`); do not run
+   `verify` again. For an existing setup, run `verify` only when a repair was
+   made, as an ordinary command the user approves. These check on-disk state
+   and the authorizer, not whether this session loaded the hooks.
    Stop on errors and report the failed step; do not disable governance or
    broaden permissions to get a green result. In a project that is already
    enforcing, the policy may deny these commands (the starter policy allows

@@ -535,7 +535,8 @@ def test_run_flags_a_cloud_overlay_without_a_policy(tmp_path, env, overlay):
 
 @pytest.mark.parametrize("args", [
     ["disable"], ["uninstall", "--yes"], ["bootstrap", "--native"], ["init"], ["up"],
-    ["refresh"], ["revoke"], ["verify", "--deep"], ["audit", "--verify", "--oops"], [],
+    ["refresh"], ["revoke"], ["verify"], ["verify", "--deep"],
+    ["audit", "--verify", "--oops"], [],
 ])
 def test_run_refuses_anything_that_is_not_a_read_only_command(tmp_path, env, args):
     """The skills pre-approve this script, so it must not be a way to change
@@ -550,7 +551,7 @@ def test_run_refuses_anything_that_is_not_a_read_only_command(tmp_path, env, arg
 
 
 @pytest.mark.parametrize("args", [
-    ["check"], ["status"], ["verify"], ["state-dir"], ["--version"],
+    ["check"], ["status"], ["state-dir"], ["--version"],
     ["audit"], ["audit", "--verify"], ["audit", "--tail", "20"],
 ])
 def test_run_passes_read_only_commands_through(tmp_path, env, args):

@@ -32,7 +32,7 @@ Ask in your own words; Claude starts the matching skill and asks before it insta
 
 ## What the plugin runs, installs, writes and sends
 
-**Runs.** Three hooks (PreToolUse, PostToolUse, SessionStart) run `scripts/tenuo-hook`, a shell script that starts `scripts/tenuo_plugin.py`, a standard-library Python launcher. On every tool call the launcher looks for a `tenuo.yaml` in the project. With none it exits and does nothing. In a governed project it passes the call to the `tenuo-claude` CLI, which asks a Tenuo authorizer running on this machine whether the call fits your policy. The launcher makes no network calls. The three skills run the same launcher with a fixed set of read-only commands (`check`, `status`, `verify`, `audit`, `state-dir`, `--version`); it refuses anything else.
+**Runs.** Three hooks (PreToolUse, PostToolUse, SessionStart) run `scripts/tenuo-hook`, a shell script that starts `scripts/tenuo_plugin.py`, a standard-library Python launcher. On every tool call the launcher looks for a `tenuo.yaml` in the project. With none it exits and does nothing. In a governed project it passes the call to the `tenuo-claude` CLI, which asks a Tenuo authorizer running on this machine whether the call fits your policy. The launcher makes no network calls. The three skills run the same launcher with a fixed set of read-only commands (`check`, `status`, `audit`, `state-dir`, `--version`); it refuses anything else.
 
 **Installs, during `/tenuo:setup` and only after you approve each command.**
 
