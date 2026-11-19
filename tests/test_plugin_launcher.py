@@ -593,9 +593,59 @@ def test_run_does_not_execute_a_project_copy_of_the_cli_before_setup(tmp_path, e
     # project's own environment is theirs, as it is for the hooks.
     cli_path.unlink()
     (proj / ".state" / "state.json").unlink()
-    tp.project_state_dir(proj, env).mkdir(parents=True)
+    state = tp.project_state_dir(proj, env)
+    state.mkdir(parents=True)
+    proc = run_skill_command(["status"], env, proj)
+    assert not ran.exists(), "an empty state directory is not proof of setup"
+    (state / "state.json").write_text("{}")
     proc = run_skill_command(["status"], env, proj)
     assert f"CLI: {local}" in proc.stdout and ran.exists()
+
+
+def test_run_is_not_fooled_by_links_or_by_path(tmp_path, env, home):
+    """Everything here is something a repository can arrange for itself."""
+    proj = make_project(tmp_path / "cloned", state=False)
+    ran = tmp_path / "ran"
+    outside = fake_cli(tmp_path / "elsewhere" / "tool", f"echo ran > {ran}")
+
+    # 1. The project's copy is a link to a program outside the project.
+    link = proj / ".venv" / "bin" / "tenuo-claude"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside)
+    proc = run_skill_command(["status"], env, proj)
+    assert not ran.exists() and "inside this project" in proc.stdout
+
+    # 2. The project's virtualenv is on PATH, or named by the override.
+    on_path = {**env, "PATH": f"{link.parent}:{env['PATH']}"}
+    assert not ran.exists() and "inside this project" in run_skill_command(["status"], on_path, proj).stdout
+    by_override = run_skill_command(["status"], {**env, "TENUO_CLAUDE_BIN": str(link)}, proj)
+    assert not ran.exists() and "CLI:" not in by_override.stdout
+
+    # 3. The project carries a `.state` that links to a directory elsewhere, or
+    #    points TENUO_STATE_DIR back into itself.
+    real_state = tmp_path / "planted-state"
+    real_state.mkdir()
+    (real_state / "state.json").write_text("{}")
+    (proj / ".state").symlink_to(real_state)
+    assert "inside this project" in run_skill_command(["status"], env, proj).stdout
+    inward = run_skill_command(["status"], {**env, "TENUO_STATE_DIR": str(proj / ".state")}, proj)
+    assert "inside this project" in inward.stdout
+    assert not ran.exists()
+
+
+def test_inside_judges_by_location_and_by_target(tmp_path):
+    root = tmp_path / "proj"
+    (root / "sub").mkdir(parents=True)
+    outside = tmp_path / "out"
+    outside.mkdir()
+    (root / "link-out").symlink_to(outside)
+    (outside / "link-in").symlink_to(root / "sub")
+    assert tp._inside(root / "sub" / "x", root)
+    assert tp._inside(root / "link-out", root)           # sits inside
+    assert tp._inside(outside / "link-in", root)         # points inside
+    assert tp._inside(root / "sub" / ".." / "y", root)
+    assert not tp._inside(outside / "z", root)
+    assert not tp._inside(tmp_path / "proj-sibling", root)
 
 
 def test_run_keeps_inspection_failures_apart_from_no_policy(tmp_path, env):

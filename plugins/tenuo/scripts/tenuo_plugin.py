@@ -218,11 +218,16 @@ def _executable(path: Path) -> bool:
     return path.is_file() and os.access(path, os.X_OK)
 
 
-def find_cli(root: Path | None, env: dict) -> str | None:
-    """Find ``tenuo-claude``: override, project venv, PATH, uv tool, pipx."""
+def find_cli(root: Path | None, env: dict, skip=None) -> str | None:
+    """Find ``tenuo-claude``: override, project venv, PATH, uv tool, pipx.
+
+    ``skip`` is an optional test for candidates that must not be used, wherever
+    they were found (the override and ``PATH`` included).
+    """
     override = (env.get("TENUO_CLAUDE_BIN") or "").strip()
     if override:
-        return override if _executable(Path(override)) else None
+        usable = _executable(Path(override)) and not (skip and skip(Path(override)))
+        return override if usable else None
     candidates: list[Path] = []
     if root is not None:
         candidates += [root / ".venv" / "bin" / n for n in CLI_NAMES]
@@ -243,6 +248,8 @@ def find_cli(root: Path | None, env: dict) -> str | None:
             home / ".local" / "pipx" / "venvs" / PYPI_PACKAGE / "bin" / CLI_NAMES[0],
         ]
     for cand in candidates:
+        if skip is not None and skip(cand):
+            continue
         if _executable(cand):
             return str(cand)
     return None
@@ -431,17 +438,32 @@ def run_session_start(raw: bytes, env: dict) -> int:
 
 
 def _inside(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except (OSError, ValueError):
-        return False
+    """True when ``path`` belongs to ``root``, by where it sits or by what it
+    points to. A link inside the project to a file outside it is still the
+    project's, and so is a link outside it to a file inside it."""
+    def spellings(value) -> set[str]:
+        raw = os.path.expanduser(str(value))
+        return {os.path.abspath(raw).casefold(), os.path.realpath(raw).casefold()}
+
+    for base in spellings(root):
+        base = base.rstrip(os.sep)
+        for candidate in spellings(path):
+            if candidate == base or candidate.startswith(base + os.sep):
+                return True
+    return False
 
 
 def _set_up_by_this_user(root: Path, env: dict) -> bool:
-    """True when the project's state directory exists outside the project."""
-    state = project_state_dir(root, env)
-    return state.is_dir() and not _inside(state, root)
+    """True when this user has initialized the project on this machine.
+
+    The evidence is ``state.json`` in a state directory outside the project,
+    which ``tenuo-claude init`` writes and a repository cannot ship. An
+    in-project ``.state``, or a link from the project to somewhere else, does
+    not count.
+    """
+    override = (env.get("TENUO_STATE_DIR") or "").strip()
+    state = Path(os.path.expanduser(override)) if override else project_state_dir(root, env)
+    return (state / "state.json").is_file() and not _inside(state, root)
 
 
 def run_cli(args: list[str], env: dict) -> int:
@@ -495,7 +517,9 @@ def run_cli(args: list[str], env: dict) -> int:
     # ship), a copy of the CLI inside the project is somebody else's file: say
     # where it is, but do not run it.
     if cli is not None and _inside(Path(cli), root) and not _set_up_by_this_user(root, env):
-        user_cli = find_cli(None, env)
+        # Not the override, not PATH, not anything else that leads back into
+        # the project.
+        user_cli = find_cli(None, env, skip=lambda candidate: _inside(candidate, root))
         if user_cli is None:
             print(f"The only tenuo-claude found is inside this project ({cli}). The plugin "
                   "does not run a project's own copy before the project is set up on this "

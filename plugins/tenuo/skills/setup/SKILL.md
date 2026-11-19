@@ -99,8 +99,15 @@ A fresh setup should cost the user two approvals: the install and the bootstrap.
    WebFetch to api.github.com, and the shell to `ls` and `pwd`. Describe the
    rendered policy as it is; do not promise broad shell access. Other packs
    need their parameters reviewed first. Continue at step 5.
-4. Existing setup: preserve the policy and its mode. Run the launcher with
-   `status`, then repair only the reported problem:
+4. Existing setup: preserve the policy and its mode. `status` does not look at
+   hook or MCP wiring, so run the preflight as well, as an ordinary command the
+   user approves:
+
+   ```sh
+   TENUO_PROJECT_DIR='<Project path>' <cli-path> check
+   ```
+
+   Then repair only the problem `check` or `status` reports:
    - no state directory yet (a policy that was never initialized on this
      machine): `init`, then `up`;
    - an initialized project with missing hook wiring, or a changed policy:
