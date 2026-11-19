@@ -126,7 +126,7 @@ claude plugin install tenuo --marketplace tenuo-ai/tenuo-claude-code
 
 That form needs Claude Code 2.1.292 or later. On older versions, or from inside a session, run `/plugin marketplace add tenuo-ai/tenuo-claude-code` and then `/plugin install tenuo@tenuo`. You can also ask Claude to run the shell command for you; start a new session afterwards so the plugin loads.
 
-Then open Claude Code in your project and run `/tenuo:setup`, or say what you want in your own words: "limit Claude to this repo and keep a log of what it does". Claude tells you what setup will change and asks before it installs anything. Setup installs the CLI, writes a starter policy and starts in observe-only mode, so nothing is blocked yet.
+Then open Claude Code in your project and run `/tenuo:setup`, or say what you want in your own words: "limit Claude to this repo and keep a log of what it does". Claude tells you what setup will change and asks before it installs anything. Setup installs the CLI, writes a starter policy and starts in observe-only mode, so nothing is blocked yet. A fresh setup asks for two approvals: the install and the bootstrap.
 
 Work as usual. Then ask "what did Claude do?" or run `/tenuo:audit` to see every tool call, signed, including the ones your policy would have stopped. When the log looks right, switch the policy to `mode: enforce` and run `tenuo-claude refresh`.
 
@@ -139,6 +139,7 @@ Work as usual. Then ask "what did Claude do?" or run `/tenuo:audit` to see every
 Good to know:
 
 - Installing the plugin alone does not turn governance on. A project opts in through setup.
+- [What the plugin runs, installs, writes and sends](plugins/tenuo/README.md#what-the-plugin-runs-installs-writes-and-sends) is listed in the plugin's own README.
 - Start a new Claude Code session after setup so the project hooks load.
 - Setup keeps an existing policy and Cloud configuration. Do not rerun local bootstrap over a Cloud configuration.
 - Removing the plugin does not remove CLI-managed project wiring; use `tenuo-claude disable` or `uninstall` for that.
@@ -147,7 +148,7 @@ What the plugin adds:
 
 - **Hooks that stay out of the way.** PreToolUse, PostToolUse, and SessionStart hooks run in every project, but they do nothing unless the project has opted in. Repos without Tenuo keep Claude Code's normal permissions.
 - **A fail-closed safety net.** If a project is governed but its `.claude/settings.json` wiring is missing (a fresh clone, a regenerated settings file), the plugin routes each call to `tenuo-claude _hook` itself. If the CLI can't be found or crashes, the call is denied with a message saying how to fix it.
-- **A one-line status at session start**, plus the three skills above. `/tenuo:status` runs `tenuo-claude check` and `/tenuo:audit` runs `tenuo-claude audit --verify`.
+- **A one-line status at session start** in governed projects (other projects see the setup hint once, then nothing), plus the three skills above. `/tenuo:status` runs `tenuo-claude check` and `/tenuo:audit` runs `tenuo-claude audit --verify`. The skills can only run read-only commands through the plugin; anything that changes your setup is an ordinary command you approve.
 
 How the plugin decides, per tool call:
 

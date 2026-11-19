@@ -393,6 +393,27 @@ def test_e2e_session_start_one_line_never_blocks(tmp_path, env, setup, needle):
     assert needle in msg and "\n" not in msg
 
 
+def test_session_start_hint_is_shown_once_in_unrelated_projects(tmp_path, env):
+    """A project that never asked for Tenuo hears about setup once, then nothing."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    data = tmp_path / "plugin-data"
+    with_data = {**env, "CLAUDE_PROJECT_DIR": str(repo), "CLAUDE_PLUGIN_DATA": str(data)}
+    event = {"hook_event_name": "SessionStart", "cwd": str(repo)}
+    first = run_hook("session-start", event, with_data, repo)
+    assert first.returncode == 0
+    assert "/tenuo:setup" in json.loads(first.stdout)["systemMessage"]
+    for _ in range(2):
+        again = run_hook("session-start", event, with_data, repo)
+        assert again.returncode == 0 and again.stdout == b""
+    # A governed project always gets its status line.
+    proj = make_project(tmp_path / "p")
+    fake_cli(proj / ".venv" / "bin" / "tenuo-claude", "exit 0")
+    governed = run_hook("session-start", {**event, "cwd": str(proj)},
+                        {**with_data, "CLAUDE_PROJECT_DIR": str(proj)}, proj)
+    assert "via the Tenuo plugin" in json.loads(governed.stdout)["systemMessage"]
+
+
 def test_e2e_no_python_fallback(tmp_path, env):
     """Without a usable python3 the sh fallback still fails closed, but only
     in an opted-in project."""
@@ -470,10 +491,48 @@ def test_run_without_policy_says_tenuo_is_not_set_up(tmp_path, env, home):
     assert proc.returncode == 0
     assert "Tenuo is not set up here" in proc.stdout and "/tenuo:setup" in proc.stdout
     assert "CLI: not installed" in proc.stdout
+    assert "Cloud credentials" not in proc.stdout
 
-    fake_cli(home / ".local" / "bin" / "tenuo-claude", "exit 0")
-    proc = run_skill_command(["check"], env, empty)
-    assert "Tenuo is not set up here" in proc.stdout and "CLI: found" in proc.stdout
+    cli_path = fake_cli(home / ".local" / "bin" / "tenuo-claude", "exit 0")
+    proc = run_skill_command(["--version"], env, empty)
+    assert "Tenuo is not set up here" in proc.stdout
+    assert f"CLI: found at {cli_path}" in proc.stdout
+
+    # Cloud credentials without a policy are an unfinished setup, not a blank slate.
+    (empty / ".state").mkdir()
+    (empty / ".state" / "cloud.env").write_text("x\n")
+    proc = run_skill_command(["status"], env, empty)
+    assert "unfinished Cloud setup" in proc.stdout
+
+
+@pytest.mark.parametrize("args", [
+    ["disable"], ["uninstall", "--yes"], ["bootstrap", "--native"], ["init"], ["up"],
+    ["refresh"], ["revoke"], ["verify", "--deep"], ["audit", "--verify", "--oops"], [],
+])
+def test_run_refuses_anything_that_is_not_a_read_only_command(tmp_path, env, args):
+    """The skills pre-approve this script, so it must not be a way to change
+    governance without the user seeing the command."""
+    proj = make_project(tmp_path / "p")
+    called = tmp_path / "called"
+    fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f"echo ran > {called}")
+    proc = run_skill_command(args, env, proj)
+    assert proc.returncode == 0
+    assert "read-only commands only" in proc.stdout
+    assert not called.exists()
+
+
+@pytest.mark.parametrize("args", [
+    ["check"], ["status"], ["verify"], ["state-dir"], ["--version"],
+    ["audit"], ["audit", "--verify"], ["audit", "--tail", "20"],
+])
+def test_run_passes_read_only_commands_through(tmp_path, env, args):
+    proj = make_project(tmp_path / "p")
+    seen = tmp_path / "seen"
+    cli_path = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f'echo "$@" > {seen}')
+    proc = run_skill_command(args, env, proj)
+    assert proc.returncode == 0
+    assert f"CLI: {cli_path}" in proc.stdout
+    assert seen.read_text().split() == args
 
 
 def test_run_keeps_inspection_failures_apart_from_no_policy(tmp_path, env):

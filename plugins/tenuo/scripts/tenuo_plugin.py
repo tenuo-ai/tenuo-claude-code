@@ -33,11 +33,15 @@ repeated on stderr, and exit code 2 (Claude Code blocks on exit 2 regardless of
 JSON parsing).
 
 ``post`` (PostToolUse) follows the same routing but never blocks.
-``session-start`` prints one status line and never blocks.
-``run <args>`` runs ``tenuo-claude <args>`` for the plugin skills. It always
-exits 0 and reports a failure in its output: Claude Code drops a skill whose
-injected command exits non-zero, which would hide the skill's own guidance in
-exactly the cases it is written for (no CLI, no policy, a failed check).
+``session-start`` prints one status line and never blocks. In a project with
+no Tenuo policy it prints the setup hint once per machine, then stays silent.
+``run <command>`` runs a read-only ``tenuo-claude`` command for the plugin
+skills (see ``SKILL_COMMANDS``); anything that changes state is refused, because
+the skills pre-approve this script and a pre-approved command must not be able
+to install, rewire or switch governance off. It always exits 0 and reports a
+failure in its output: Claude Code drops a skill whose injected command exits
+non-zero, which would hide the skill's own guidance in exactly the cases it is
+written for (no CLI, no policy, a failed check).
 """
 
 from __future__ import annotations
@@ -59,6 +63,14 @@ PYPI_PACKAGE = "tenuo-claude-code"
 BOOTSTRAP_HINT = "tenuo-claude bootstrap --native --pack filesystem-dev"
 INSTALL_HINT = f"uv tool install {PYPI_PACKAGE}"
 SETUP_HINT = "/tenuo:setup"
+# The only commands `run` passes to the CLI. All of them read; none writes
+# policy, wiring or state, starts or stops the authorizer, or installs anything.
+SKILL_COMMANDS = ("check", "status", "verify", "audit", "state-dir", "--version")
+# Flags `run` lets through, per command. `verify --deep` starts a live Claude
+# Code run, so it is not something to do unprompted.
+SKILL_FLAGS = {"audit": ("--verify", "--tail")}
+HINT_MARKER = "setup-hint-shown"
+CLOUD_FILES = ("cloud.env", "cloud_state.json")
 
 # Claude Code managed settings locations (highest precedence, MDM-pinned).
 MANAGED_SETTINGS_PATHS = (
@@ -380,9 +392,33 @@ def status_line(event: dict, env: dict) -> str:
     return f"Tenuo: tool calls will be denied until this is fixed. {message}"
 
 
+def _hint_already_shown(env: dict) -> bool:
+    """True when the "not configured here" hint was shown before on this machine.
+
+    The marker lives in the plugin's own data directory. Without one (an older
+    Claude Code), the hint is shown every time, as before.
+    """
+    data = (env.get("CLAUDE_PLUGIN_DATA") or "").strip()
+    if not data:
+        return False
+    marker = Path(data) / HINT_MARKER
+    if marker.exists():
+        return True
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("shown\n", encoding="utf-8")
+    except OSError:
+        pass
+    return False
+
+
 def run_session_start(raw: bytes, env: dict) -> int:
     event = _parse(raw)
     try:
+        # Stay out of the way in projects that never asked for Tenuo: say how to
+        # set it up once, then nothing.
+        if decide(event, env)[0] == NOOP_NO_PROJECT and _hint_already_shown(env):
+            return 0
         line = status_line(event, env)
     except Exception as exc:  # never block session start
         line = f"Tenuo: status unavailable ({exc})"
@@ -402,6 +438,12 @@ def run_cli(args: list[str], env: dict) -> int:
     calls are governed or denied), and a CLI run that failed (a final
     ``[tenuo-claude exited N]`` line).
     """
+    command = args[0] if args else ""
+    extras = [a for a in args[1:] if not a.isdigit()]
+    if command not in SKILL_COMMANDS or any(a not in SKILL_FLAGS.get(command, ()) for a in extras):
+        print(f"Tenuo: the plugin runs these read-only commands only: {', '.join(SKILL_COMMANDS)} "
+              f"(audit also takes --verify and --tail N). Run `tenuo-claude {' '.join(args)}` yourself.")
+        return 0
     root, error = find_project({}, env)
     if error:
         # Broken explicit opt-in: the hooks deny every call until it is fixed.
@@ -409,9 +451,14 @@ def run_cli(args: list[str], env: dict) -> int:
         return 0
     cli = find_cli(root, env)
     if root is None:
-        cli_note = "found" if cli else f"not installed ({INSTALL_HINT})"
+        cli_note = f"found at {cli}" if cli else f"not installed (install: {INSTALL_HINT})"
         print(f"No {POLICY_FILE} in this directory or any parent: Tenuo is not set up here. "
               f"To set it up: {SETUP_HINT}. tenuo-claude CLI: {cli_note}.")
+        here = Path(env.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+        if any((d / name).exists() for d in (project_state_dir(here, env), here / STATE_DIR)
+               for name in CLOUD_FILES):
+            print("Cloud credentials exist for this directory but there is no "
+                  f"{POLICY_FILE}: an unfinished Cloud setup. Do not bootstrap it in local mode.")
         return 0
     print(f"Plugin: {status_line({}, env)}")
     if cli is None:
@@ -420,6 +467,7 @@ def run_cli(args: list[str], env: dict) -> int:
         print(f"tenuo-claude not found, so `tenuo-claude {' '.join(args)}` could not run. "
               f"Install it with: {INSTALL_HINT}")
         return 0
+    print(f"CLI: {cli}")
     sys.stdout.flush()
     try:
         proc = subprocess.run([cli, *args], cwd=str(root), env=_child_env(env, root))
