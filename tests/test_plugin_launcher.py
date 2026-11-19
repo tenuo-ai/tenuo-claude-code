@@ -887,10 +887,13 @@ def test_hook_wrapper_skips_an_interpreter_inside_the_project(tmp_path, env):
     project's file, and is not what should run the launcher."""
     ran = tmp_path / "ran"
     event = json.dumps(PRE_EVENT).encode()
+    # A python3 of the user's own, in a directory that holds nothing else. (The
+    # interpreter's real directory may also hold an installed tenuo-claude.)
+    own_python = fake_cli(tmp_path / "pybin" / "python3", f'exec "{sys.executable}" "$@"')
     for name, set_up in (("cloned", False), ("mine", True)):
         proj = make_project(tmp_path / name, state=set_up)
         fake_cli(proj / "bin" / "python3", f"echo ran > {ran}")
-        path = f"{proj / 'bin'}:{Path(sys.executable).parent}:{env['PATH']}"
+        path = f"{proj / 'bin'}:{own_python.parent}:{env['PATH']}"
         proc = subprocess.run([str(HOOK_SH), "pre"], input=event, capture_output=True, cwd=str(proj),
                               env={**env, "PATH": path, "CLAUDE_PROJECT_DIR": str(proj)}, timeout=60)
         assert not ran.exists()
