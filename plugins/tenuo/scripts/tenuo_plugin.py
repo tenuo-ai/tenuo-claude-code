@@ -34,7 +34,10 @@ JSON parsing).
 
 ``post`` (PostToolUse) follows the same routing but never blocks.
 ``session-start`` prints one status line and never blocks.
-``run <args>`` runs ``tenuo-claude <args>`` for the plugin skills.
+``run <args>`` runs ``tenuo-claude <args>`` for the plugin skills. It always
+exits 0 and reports a failure in its output: Claude Code drops a skill whose
+injected command exits non-zero, which would hide the skill's own guidance in
+exactly the cases it is written for (no CLI, no policy, a failed check).
 """
 
 from __future__ import annotations
@@ -55,6 +58,7 @@ CLI_NAMES = ("tenuo-claude", "tenuo-claude-code")
 PYPI_PACKAGE = "tenuo-claude-code"
 BOOTSTRAP_HINT = "tenuo-claude bootstrap --native --pack filesystem-dev"
 INSTALL_HINT = f"uv tool install {PYPI_PACKAGE}"
+SETUP_HINT = "/tenuo:setup"
 
 # Claude Code managed settings locations (highest precedence, MDM-pinned).
 MANAGED_SETTINGS_PATHS = (
@@ -361,7 +365,7 @@ def status_line(event: dict, env: dict) -> str:
     install = "" if cli_found else f" (install first: {INSTALL_HINT})"
     if decision == NOOP_NO_PROJECT:
         return ("Tenuo not configured here; Claude Code permissions apply as usual. "
-                f"To govern this project: {BOOTSTRAP_HINT}{install}")
+                f"To govern this project: {SETUP_HINT}")
     if decision == NOOP_NOT_INITIALIZED:
         return (f"Tenuo: {root / POLICY_FILE} found but not initialized, so tool calls are "
                 f"NOT governed yet. Run: tenuo-claude bootstrap{install}")
@@ -387,23 +391,36 @@ def run_session_start(raw: bytes, env: dict) -> int:
 
 
 def run_cli(args: list[str], env: dict) -> int:
-    """Run ``tenuo-claude <args>`` in the governed project (for plugin skills)."""
+    """Run ``tenuo-claude <args>`` in the governed project (for plugin skills).
+
+    Always returns 0. A skill's injected command that exits non-zero aborts the
+    whole skill, so the outcome is reported in the output instead: one plain
+    line when Tenuo cannot run here, or a final ``[tenuo-claude exited N]`` line
+    when the CLI itself failed.
+    """
     root, error = find_project({}, env)
     if error:
         print(f"Tenuo: {error}")
-        return 1
+        return 0
     cli = find_cli(root, env)
     if cli is None:
-        print(f"tenuo-claude not found. Install it with: {INSTALL_HINT}")
-        return 1
+        print(f"tenuo-claude not found. Install it with: {INSTALL_HINT}, or run {SETUP_HINT}")
+        return 0
     if root is None:
         print(f"No {POLICY_FILE} in this directory or any parent. "
-              f"To set up Tenuo here: {BOOTSTRAP_HINT}")
-        return 1
+              f"To set up Tenuo here: {SETUP_HINT}")
+        return 0
     print(f"Plugin: {status_line({}, env)}")
     sys.stdout.flush()
-    proc = subprocess.run([cli, *args], cwd=str(root), env=_child_env(env, root))
-    return proc.returncode
+    try:
+        proc = subprocess.run([cli, *args], cwd=str(root), env=_child_env(env, root))
+    except OSError as exc:
+        print(f"Tenuo: could not run {cli} ({exc})")
+        return 0
+    if proc.returncode != 0:
+        sys.stdout.flush()
+        print(f"[tenuo-claude exited {proc.returncode}]")
+    return 0
 
 
 def _parse(raw: bytes) -> dict:
