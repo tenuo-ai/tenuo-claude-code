@@ -97,7 +97,7 @@ After editing warrant-backed policy (`enforce`, `default`, `audit_*`, `subagents
 
 ### Warrant TTL and refresh
 
-Session warrants have a ~1h TTL; `status` flags `EXPIRED` when one lapses. `tenuo-claude up` refreshes even while the authorizer runs (Cloud re-fires the trigger, local re-mints with the same issuer key) with no container restart (the warrant rides in each request header). Subagent child warrants are re-derived from the fresh session warrant.
+Session warrants have a ~1h TTL. In local mode an expired warrant is re-minted on the next tool call with exactly the permissions it already had, and the renewal is written to the receipt log; policy edits are not picked up and still need `refresh`. `auto_renew: false` turns this off. Where a warrant does not renew itself (Cloud trigger, managed mode, or `auto_renew: false`), `status` flags `EXPIRED` when it lapses. `tenuo-claude up` refreshes even while the authorizer runs (Cloud re-fires the trigger, local re-mints with the same issuer key) with no container restart (the warrant rides in each request header). Subagent child warrants are re-derived from the fresh session warrant.
 
 ## Receipts
 
