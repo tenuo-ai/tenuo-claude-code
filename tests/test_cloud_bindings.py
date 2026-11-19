@@ -215,7 +215,7 @@ def test_refresh_subwarrants_holder_mismatch_message(monkeypatch, bound, make_cf
         def inherit_all(self):
             return self
 
-        def with_tools(self, _caps):
+        def retain_tools(self, _caps):
             return self
 
         def with_intent(self, _intent):

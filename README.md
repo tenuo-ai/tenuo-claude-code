@@ -261,6 +261,7 @@ It does **not** govern:
 name: acme-backend
 sandbox: ./workspace        # a directory; {sandbox} expands to its absolute path
 ttl_seconds: 3600           # optional: session warrant lifetime (default 3600 = 1h)
+auto_renew: true            # optional, local mode: renew an expired warrant with the same permissions (default true)
 mode: enforce               # block out-of-scope calls; 'dry-run' = log only
 
 enforce:
@@ -359,7 +360,8 @@ For internal egress, `WebFetch` also accepts `cidrs:` (e.g., `cidrs: ["10.0.0.0/
   - **`mode: enforce`** blocks denied calls
   - **`mode: dry-run`** logs decisions, blocks nothing (use to shadow a policy before enforcing)
 - **`subagents:`** declares roles; each runs with attenuated authority
-- **`ttl_seconds:`** warrant lifetime in seconds (default 3600 = 1h); `up` re-mints
+- **`ttl_seconds:`** warrant lifetime in seconds (default 3600 = 1h)
+- **`auto_renew:`** local mode only (default `true`). When the warrant expires, the next tool call re-mints it with exactly the permissions it already had, so a setup keeps working from one day to the next. It never picks up edits to `tenuo.yaml`; those take effect only when you run `tenuo-claude refresh`. Set `false` to make authority lapse at `ttl_seconds` until you run `tenuo-claude up`. Cloud and managed warrants are issued by the Cloud trigger and are never renewed locally
 
 After any edit, run `tenuo-claude refresh`.
 
@@ -385,7 +387,7 @@ Day to day: `up` (start), `audit` (review), `refresh` (after editing policy).
 | `bench [--json]` | Measure per-call overhead on your machine. |
 | `revoke` | Revoke the current session warrant. |
 
-The warrant is short-lived (~1h TTL); `up` refreshes it before expiry. Generated files (don't commit): `.claude/settings.json` (hooks), `.mcp.json` (MCP proxy).
+The warrant is short-lived (~1h TTL). In local mode it renews itself with the same permissions (see `auto_renew`); with a Cloud trigger, `up` refreshes it. Generated files (don't commit): `.claude/settings.json` (hooks), `.mcp.json` (MCP proxy).
 
 **State.** Keys, warrant, gateway config, receipts and Cloud credentials live outside the project, in `~/.tenuo/projects/<project>-<hash>/`, so nothing scoped to the project tree can reach them. `tenuo-claude state-dir` prints the path; `<state>/…` in these docs means a file in it. A project set up by an older release keeps using `<project>/.state` until the next `tenuo-claude refresh`, which moves it.
 

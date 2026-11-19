@@ -810,6 +810,8 @@ def load_config() -> dict:
         raise SystemExit(f"{', '.join(clashes)}: `allow:` overlaps an approval-gated tool or capability")
     if cfg.get("ttl_seconds") is not None:
         validate_ttl_seconds(cfg["ttl_seconds"])
+    if not isinstance(cfg.get("auto_renew", True), bool):
+        raise SystemExit(f"Invalid auto_renew: {cfg['auto_renew']!r}. Must be true or false.")
     return cfg
 
 
@@ -861,7 +863,7 @@ def refresh_subwarrants(cfg: dict) -> None:
                 "A subagent can't exceed the parent — add the tool to `enforce` first.")
         builder = parent.attenuate_builder()
         builder.inherit_all()
-        builder.with_tools(caps)  # retain subset, keep the parent's constraints
+        builder.retain_tools(caps)  # keep this subset with the parent's constraints
         builder.with_intent(f"subagent:{role}")
         if rc.get("ttl_seconds"):
             builder.with_ttl(int(rc["ttl_seconds"]))
@@ -1443,6 +1445,9 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
         out = (allowed, reason, governed, tenuo_tool)
         return (*out, evidence or {}) if return_context else out
 
+    # Local mode: keep an expired session warrant usable without a terminal step.
+    renew_session_warrant_if_due(cfg)
+
     own = tenuo_file_target(tool, tin)
     if own:
         hint = (" (run `tenuo-claude refresh` to move state out of the project)"
@@ -1621,6 +1626,59 @@ def _receipt_trust_roots() -> list[str]:
     return out
 
 
+def _receipt_time(payload: dict, authz: dict) -> float | None:
+    """When the decision in a receipt was made: the PoP time, else the receipt time."""
+    pop_ts = authz.get("pop_ts")
+    if isinstance(pop_ts, int):
+        return float(pop_ts)
+    try:
+        ts = datetime.fromisoformat(str(payload.get("ts")).replace("Z", "+00:00"))
+        return (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)).timestamp()
+    except Exception:
+        return None
+
+
+def _warrant_expiry_time(warrant) -> float:
+    exp = datetime.fromisoformat(str(warrant.expires_at()).replace("Z", "+00:00"))
+    return (exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def _verify_chain_as_of(chain: list, roots: list[str], when: float | None,
+                        recorded: str | None) -> str | None:
+    """Check a warrant chain that has expired since the receipt was written.
+
+    The live verifier judges expiry against the current time, so it rejects every
+    receipt older than its warrant's lifetime. A receipt has to hold as of the
+    moment it records. This repeats the chain checks with expiry judged at that
+    moment: a trusted root signed the first warrant, each later warrant is
+    signed by its parent's holder and links to it, and no child holds a tool or
+    constraint its parent lacks. Stricter than the live verifier on that last
+    point: a child's constraints must equal the parent's.
+
+    Returns None when the chain holds, else the reason it does not.
+    """
+    if when is None:
+        return "no usable timestamp for a warrant that has since expired"
+    was_expired = any(_warrant_expiry_time(w) < when for w in chain)
+    if was_expired and recorded == "allow":
+        return "recorded allow under a warrant that had already expired"
+    root_keys = [bytes.fromhex(r) for r in roots]
+    if not any(chain[0].verify(key) for key in root_keys):
+        return "first warrant is not signed by a trusted root"
+    for parent, child in zip(chain, chain[1:]):
+        if not child.verify(bytes(parent.authorized_holder.to_bytes())):
+            return f"warrant {child.id} is not signed by its parent's holder"
+        if child.parent_hash != hashlib.sha256(bytes(parent.payload_bytes)).hexdigest():
+            return f"warrant {child.id} does not link to its parent"
+        if child.depth != parent.depth + 1:
+            return f"warrant {child.id} has the wrong depth"
+        parent_caps = json.loads(_capability_signature(parent))
+        for tool, fields in json.loads(_capability_signature(child)).items():
+            if parent_caps.get(tool) != fields:
+                return f"warrant {child.id} holds '{tool}' beyond its parent"
+    return None
+
+
 def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
     """Replay the governed decision embedded in one receipt payload.
 
@@ -1662,7 +1720,7 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
         if not roots:
             return [*errors, f"receipt {idx}: no trusted root key available for warrant verification"]
 
-        from tenuo.exceptions import UntrustedRoot
+        from tenuo.exceptions import ExpiredError, UntrustedRoot
         verified_root = None
         chain_errors: list[str] = []
         untrusted_root_error = None
@@ -1673,6 +1731,14 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
                 verifier.verify_chain(chain)
                 verified_root = root
                 break
+            except ExpiredError:
+                # Expired since the receipt was written: judge it as of then.
+                problem = _verify_chain_as_of(chain, [root], _receipt_time(payload, authz),
+                                              payload.get("decision"))
+                if problem is None:
+                    verified_root = root
+                    break
+                chain_errors.append(f"root[{pos}] {root[:16]}...: {problem}")
             except UntrustedRoot as ute:
                 untrusted_root_error = str(ute)
                 chain_errors.append(f"root[{pos}] {root[:16]}...: root warrant untrusted")
@@ -1774,7 +1840,8 @@ def receipt_verify_summary_lines(rows: list[dict], ok: bool = True) -> list[str]
     if governed:
         lines.extend([
             f"  {mark} warrant binding        warrant id + warrant stack hash in governed receipts",
-            f"  {mark} warrant chain          checked against trusted warrant root(s)",
+            f"  {mark} warrant chain          checked against trusted warrant root(s); "
+            "expiry judged at each receipt's own time",
             f"  {mark} decision replay        recorded allow/deny matches warrant constraints",
         ])
         if approval_gated:
@@ -2237,6 +2304,111 @@ def update_state_warrant_id(wid: str) -> None:
         STATE_JSON.write_text(json.dumps(st, indent=2))
     except Exception:
         pass
+
+
+# Renew this close to the deadline, so a call can't start valid and reach the
+# authorizer expired.
+RENEW_MARGIN_SECONDS = 30
+
+
+def auto_renew_enabled(cfg: dict) -> bool:
+    """`auto_renew: false` in tenuo.yaml keeps the old behaviour: authority lapses
+    at `ttl_seconds` until someone runs `tenuo-claude up`."""
+    return cfg.get("auto_renew", True) is not False
+
+
+def _capability_signature(warrant) -> str:
+    """Canonical text of what a warrant grants, for an exact before/after check."""
+    caps = warrant.capabilities or {}
+    return json.dumps({tool: {field: repr(cons) for field, cons in (fields or {}).items()}
+                       for tool, fields in caps.items()}, sort_keys=True)
+
+
+def _warrant_seconds_left(warrant) -> float:
+    exp = datetime.fromisoformat(str(warrant.expires_at()).replace("Z", "+00:00"))
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return (exp - datetime.now(timezone.utc)).total_seconds()
+
+
+def _replace_secret(path: Path, text: str) -> None:
+    """Swap a secret file in one step, so a concurrent hook never reads half of it."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def local_auto_renew_applies(cfg: dict) -> bool:
+    """True when this project's session warrant is one we may re-mint unattended:
+    local mode, not managed, not switched off, and the local keys are present."""
+    if not auto_renew_enabled(cfg) or managed_mode(cfg) or use_cloud_trigger(cfg):
+        return False
+    return WARRANT.exists() and ISSUER_KEY.exists() and HOLDER_KEY.exists()
+
+
+def renew_session_warrant_if_due(cfg: dict) -> str | None:
+    """Re-mint an expired local session warrant with EXACTLY the same permissions.
+
+    Local mode only. The new warrant copies its capabilities from the expiring
+    one; `tenuo.yaml` is not consulted for them, so a policy edit never takes
+    effect here and still needs `tenuo-claude refresh`. Cloud and managed
+    warrants come from the Cloud trigger and are never renewed locally.
+
+    Returns the new warrant id, or None when nothing was renewed. Never raises:
+    if anything is off, the expired warrant is left in place and the authorizer
+    keeps denying, as before.
+    """
+    try:
+        if not local_auto_renew_applies(cfg):
+            return None
+        from tenuo import SigningKey, Warrant
+        from tenuo_core import decode_warrant_stack_base64, encode_warrant_stack
+
+        old = Warrant.from_base64(WARRANT.read_text())
+        ttl = session_ttl_seconds(cfg)
+        if _warrant_seconds_left(old) > min(RENEW_MARGIN_SECONDS, ttl / 10):
+            return None
+        issuer = SigningKey.from_bytes(base64.b64decode(ISSUER_KEY.read_text()))
+        holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
+        # Only a warrant this machine issued to this holder. A Cloud-issued
+        # warrant left behind in a project must not be replaced by a local one.
+        if bytes(old.issuer.to_bytes()) != bytes(issuer.public_key.to_bytes()):
+            return None
+        if bytes(old.authorized_holder.to_bytes()) != bytes(holder.public_key.to_bytes()):
+            return None
+
+        builder = Warrant.mint_builder()
+        for tool, constraints in (old.capabilities or {}).items():
+            builder = builder.capability(tool, constraints)
+        new = builder.holder(holder.public_key).ttl(ttl).mint(issuer)
+        if _capability_signature(new) != _capability_signature(old):
+            return None
+
+        # Subagent warrants chain to the session warrant: re-derive each one that
+        # exists from the new parent, keeping its tool set.
+        children: list[tuple[Path, str]] = []
+        for path in sorted(STATE.glob("subwarrant_*.b64")):
+            old_child = decode_warrant_stack_base64(path.read_text())[-1]
+            child_builder = new.attenuate_builder()
+            child_builder.inherit_all()
+            child_builder.retain_tools(list(old_child.tools))
+            child_builder.with_intent("subagent:" + path.stem[len("subwarrant_"):])
+            child = child_builder.delegate(holder)
+            if _capability_signature(child) != _capability_signature(old_child):
+                return None
+            children.append((path, encode_warrant_stack([new, child])))
+
+        _replace_secret(WARRANT, new.to_base64())
+        for path, stack in children:
+            _replace_secret(path, stack)
+        update_state_warrant_id(new.id)
+        write_receipt({"phase": "renew", "old_warrant_id": old.id, "new_warrant_id": new.id,
+                       "reason": "session warrant expired; re-minted with the same permissions"})
+        return new.id
+    except Exception:
+        return None
 
 
 def sync_runtime_artifacts(cfg: dict | None = None, *, restart_authorizer: bool = False) -> bool:
@@ -3268,8 +3440,8 @@ def cmd_check(_args) -> None:
         ok = False
 
     claude = shutil.which("claude")
-    _check_line(bool(claude), "claude CLI", claude or "not on PATH",
-                "install Claude Code; optional for check / verify --deep")
+    _check_line(True if claude else None, "claude CLI", claude or "not on PATH",
+                "" if claude else "install Claude Code; optional for check / verify --deep")
 
     ok = _check_line(CONFIG_FILE.exists(), "tenuo.yaml", str(CONFIG_FILE)) and ok
 
@@ -3356,14 +3528,15 @@ def cmd_check(_args) -> None:
 
     run_cfg = cfg or {"name": "tenuo-claude"}
     if WARRANT.exists():
-        exp = warrant_expired()
-        soon, exp_at = warrant_expires_within(24)
+        state, note = warrant_expiry_note(run_cfg)
         detail = "present"
-        if exp:
+        if state == "expired":
             detail += " (expired — run up)"
-        elif soon:
-            detail += f" (expires soon: {exp_at} — run up to refresh)"
-        _check_line(None if exp or soon else True, "warrant", detail)
+        elif state == "soon":
+            detail += f" ({note} — run up to refresh)"
+        elif note:
+            detail += f" ({note})"
+        _check_line(True if state == "ok" else None, "warrant", detail)
     elif mode == "local":
         _check_line(None, "warrant", "missing", "run: tenuo-claude init")
 
@@ -3711,6 +3884,32 @@ def warrant_expired() -> bool:
         return False  # missing/unreadable warrant still fails closed at the authorizer
 
 
+def warrant_expiry_note(cfg: dict) -> tuple[str, str]:
+    """How the session warrant's expiry should read in `status` and `check`.
+
+    Returns ``(state, note)`` with state ``ok``, ``soon`` or ``expired``. A local
+    warrant that renews itself is never a warning. Otherwise the "soon" window
+    is the last day of a long-lived warrant, or the last quarter of a short
+    one, so a healthy one-hour warrant is not flagged the moment it is minted.
+    """
+    try:
+        from tenuo import Warrant
+        w = Warrant.from_base64(WARRANT.read_text())
+        renews = local_auto_renew_applies(cfg)
+        if w.is_expired():
+            return ("ok", "expired; renews on the next tool call") if renews else ("expired", "")
+        if renews:
+            return "ok", "renews automatically"
+        window = 24 * 3600.0
+        if not use_cloud_trigger(cfg):
+            window = min(window, session_ttl_seconds(cfg) / 4)
+        if _warrant_seconds_left(w) <= window:
+            return "soon", f"expires soon: {w.expires_at()}"
+    except Exception:
+        pass
+    return "ok", ""
+
+
 def warrant_expires_within(hours: float = 24) -> tuple[bool, str]:
     """True when the session warrant expires within ``hours`` (and is not already expired)."""
     try:
@@ -4033,11 +4232,10 @@ def cmd_status(_args) -> None:
         try:
             from tenuo import Warrant
             w = Warrant.from_base64(WARRANT.read_text())
-            flag = ("  !! EXPIRED — run `tenuo-claude up` to refresh"
-                    if w.is_expired() else "")
-            soon, _ = warrant_expires_within(24)
-            if soon and not flag:
-                flag = "  !! expires within 24h — run `tenuo-claude up` to refresh"
+            state, note = warrant_expiry_note(cfg)
+            flag = {"ok": f"  ({note})" if note else "",
+                    "soon": f"  !! {note} — run `tenuo-claude up` to refresh",
+                    "expired": "  !! EXPIRED — run `tenuo-claude up` to refresh"}[state]
             print(f"  expires   : {w.expires_at()}{flag}")
         except Exception:
             print("  expires   : <unreadable warrant>")
@@ -4157,6 +4355,9 @@ def cmd_audit(args) -> None:
     for r in rows:
         if r.get("phase") == "post":
             print(f"  · outcome  {r.get('claude_tool',''):14} {r.get('outcome_preview','')[:60]}")
+        elif r.get("phase") == "renew":
+            print(f"  · renewed  warrant {r.get('old_warrant_id','?')} -> "
+                  f"{r.get('new_warrant_id','?')} (same permissions)")
         else:
             d = r.get("decision", "")
             # In observe-only mode a "deny" was logged but NOT enforced.
