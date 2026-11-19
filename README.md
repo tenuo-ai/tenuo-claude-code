@@ -155,14 +155,15 @@ How the plugin decides, per tool call:
 | Project state | PreToolUse result |
 |---|---|
 | No `tenuo.yaml` in the session directory or any parent | Nothing (Claude Code permissions apply) |
-| `tenuo.yaml` but no state directory (never initialized) | Nothing; session start says to run `bootstrap` |
+| `tenuo.yaml` but not set up by you on this machine (no state under `~/.tenuo`) | Nothing; session start says to run `bootstrap` |
+| `tenuo.yaml` and a `.state` folder inside the project | Nothing: the plugin does not act on state a project carries. Session start says so; `tenuo-claude refresh` moves an older setup to `~/.tenuo` |
 | `<state>/disabled` present (`tenuo-claude disable`) | Nothing; `tenuo-claude up` or `init` re-arms it |
 | Tenuo hooks already wired by `init`/`bootstrap` (project, user, or managed settings) | Nothing; the wired hook enforces, so no double receipts |
 | Initialized, not wired, `tenuo-claude` found | Delegates to `tenuo-claude _hook` |
 | Initialized, not wired, `tenuo-claude` missing, crashing, or timing out | Deny (fail-closed) |
 | `TENUO_PROJECT_DIR` set to a directory without `tenuo.yaml` | Deny (fail-closed) |
 
-The CLI is found via `TENUO_CLAUDE_BIN`, the project `.venv`, `PATH`, then the uv tool and pipx install locations. The launcher is stdlib Python ([`plugins/tenuo/scripts/tenuo_plugin.py`](plugins/tenuo/scripts/tenuo_plugin.py)); it makes no network calls itself. macOS and Linux only, like the CLI.
+The CLI is your own first: `TENUO_CLAUDE_BIN`, `PATH`, then the uv tool and pipx install locations. A copy in the project's `.venv` is the fallback, and only in a project you have set up on this machine; before that the plugin never runs it. The same goes for a `python3` that sits inside the project. The launcher is stdlib Python ([`plugins/tenuo/scripts/tenuo_plugin.py`](plugins/tenuo/scripts/tenuo_plugin.py)); it makes no network calls itself. macOS and Linux only, like the CLI.
 
 To try a local checkout: `claude --plugin-dir ./plugins/tenuo`.
 

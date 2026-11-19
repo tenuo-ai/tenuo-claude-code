@@ -4,32 +4,52 @@
 # Runs the stdlib-only launcher (tenuo_plugin.py) with python3. If no usable
 # python3 exists, fall back to a minimal shell check so that an opted-in
 # project still fails closed while every other project stays untouched.
+#
+# Which python3: one outside the project comes first. An interpreter that sits
+# inside the project, or is a link to a file inside it, is the project's file;
+# it is used only when there is no other and the user has set the project up
+# on this machine. "The project" is the session directory and the directory
+# that holds the governing tenuo.yaml, which may be a parent of it or the one
+# TENUO_PROJECT_DIR names.
+#
+# The script's own helpers (readlink, sed, shasum and the like) are looked up
+# on a fixed system path, never on the caller's PATH: that PATH is the thing
+# being screened, and may lead into the project. The caller's PATH is kept
+# aside for finding the interpreter, and handed back to the launcher.
 # Usage: tenuo-hook pre|post|session-start
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+user_path=${PATH:-}
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:/run/current-system/sw/bin
+export PATH
+case "$0" in
+  */*) here=${0%/*} ;;
+  *) here=. ;;
+esac
+here=$(CDPATH= cd -- "$here" && pwd)
 mode=${1:-}
+nl='
+'
 
-# TENUO_PLUGIN_PYTHON pins the interpreter (no fallback to others).
-if [ -n "${TENUO_PLUGIN_PYTHON:-}" ]; then
-  interpreters=$TENUO_PLUGIN_PYTHON
-else
-  interpreters="python3 /usr/bin/python3 python"
-fi
-for py in $interpreters; do
-  if command -v "$py" >/dev/null 2>&1; then
-    "$py" "$here/tenuo_plugin.py" "$@"
-    rc=$?
-    # The launcher only ever exits 0 or 2. Any other code means this
-    # interpreter could not run it (missing, too old, macOS stub), so try the
-    # next one and finally the shell fallback below.
-    if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
-      exit "$rc"
-    fi
+# Run the launcher with one interpreter. The launcher only ever exits 0 or 2.
+# Any other code means this interpreter could not run it (missing, too old,
+# macOS stub), so the caller tries the next one.
+try() {
+  py=$1
+  shift
+  PATH=$user_path "$py" "$here/tenuo_plugin.py" "$@"
+  rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
+    exit "$rc"
   fi
-done
+}
 
-[ "$mode" = "pre" ] || exit 0
+physical_dir() {
+  CDPATH= cd -- "$1" 2>/dev/null && pwd -P
+}
 
-# Without Python, resolve state using the same project-path hash as the CLI.
+# The governing project: the explicit override, else the nearest tenuo.yaml at
+# or above the session directory. The walk is done on the directory's real
+# path, as the launcher does it, and on the path as given: when the session
+# directory is a link, the two lead to different parents.
 find_root() {
   d=$1
   while [ -n "$d" ]; do
@@ -37,23 +57,121 @@ find_root() {
       printf '%s' "$d"
       return 0
     fi
-    [ "$d" = "/" ] && return 1
-    d=$(dirname -- "$d")
+    case "$d" in
+      /) return 1 ;;
+      */*) d=${d%/*}; [ -n "$d" ] || d=/ ;;
+      *) return 1 ;;
+    esac
   done
   return 1
 }
 root=""
+also_root=""
 if [ -n "${TENUO_PROJECT_DIR:-}" ]; then
   root=$TENUO_PROJECT_DIR
 else
+  seen=""
   for start in "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
-    [ -n "$start" ] || continue
-    root=$(find_root "$start") && break
+    [ -n "$start" ] && [ "$start" != "$seen" ] || continue
+    seen=$start
+    real_start=$(physical_dir "$start") || real_start=$start
+    [ -n "$also_root" ] || [ "$real_start" = "$start" ] || also_root=$(find_root "$start") || also_root=""
+    root=$(find_root "$real_start") && break
     root=""
   done
 fi
+rootp=""
+[ -n "$root" ] && rootp=$(physical_dir "$root")
+
+proj=${CLAUDE_PROJECT_DIR:-$PWD}
+projp=$(physical_dir "$proj") || projp=$proj
+
+in_project() {
+  for base in "$proj" "$projp" "$root" "$rootp" "$also_root"; do
+    [ -n "$base" ] || continue
+    case "$1" in
+      "$base"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Follow a file's chain of links to the file it finally names. Prints nothing
+# and fails when the chain cannot be followed.
+resolve_file() {
+  f=$1
+  hops=0
+  while [ -L "$f" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -le 40 ] || return 1
+    target=$(readlink "$f" 2>/dev/null) || return 1
+    case "$target" in
+      /*) f=$target ;;
+      *) f="${f%/*}/$target" ;;
+    esac
+  done
+  d=$(physical_dir "${f%/*}") || return 1
+  printf '%s/%s' "$d" "${f##*/}"
+}
+
+inside=""
+# Look at one candidate. It is the project's when its own path, its directory's
+# real path, or the file it links to is in the project: remember it for later.
+# Otherwise it is the user's own, so run the launcher with it now; the search
+# ends at the first one that works. One whose links cannot be followed is
+# dropped. This runs on every tool call, so it stops as early as it can.
+consider() {
+  cand=$1
+  shift
+  [ -f "$cand" ] && [ -x "$cand" ] || return 0
+  real_dir=$(physical_dir "${cand%/*}") || return 0
+  if [ -L "$cand" ]; then
+    final=$(resolve_file "$cand") || return 0
+  else
+    final="$real_dir/${cand##*/}"
+  fi
+  if in_project "$cand" || in_project "$final" || in_project "$real_dir/${cand##*/}"; then
+    inside="$inside$cand$nl"
+    return 0
+  fi
+  try "$cand" "$@"
+}
+
+if [ -n "${TENUO_PLUGIN_PYTHON:-}" ]; then
+  # TENUO_PLUGIN_PYTHON pins the interpreter (no fallback to others).
+  for py in $TENUO_PLUGIN_PYTHON; do
+    if PATH=$user_path command -v "$py" >/dev/null 2>&1; then
+      try "$py" "$@"
+    fi
+  done
+else
+  # Walk PATH ourselves: `command -v` stops at the first match, which may be
+  # the one to skip. Relative entries are ignored.
+  for name in python3 python; do
+    old_ifs=$IFS
+    IFS=:
+    set -f
+    for dir in $user_path; do
+      IFS=$old_ifs
+      case "$dir" in
+        /*) consider "$dir/$name" "$@" ;;
+      esac
+    done
+    set +f
+    IFS=$old_ifs
+    [ "$name" = python3 ] && consider /usr/bin/python3 "$@"
+  done
+fi
+
+# No interpreter of the user's own ran the launcher. Work out, without Python,
+# whether this user has set the project up: state.json in a state directory
+# outside the project, at the same project-path hash the CLI uses.
 [ -n "$root" ] || exit 0
-root=$(CDPATH= cd -- "$root" 2>/dev/null && pwd -P) || exit 2
+root=$rootp
+[ -n "$root" ] || {
+  [ "$mode" = "pre" ] && exit 2
+  exit 0
+}
 state=${TENUO_STATE_DIR:-}
 if [ -z "$state" ]; then
   digest=""
@@ -67,19 +185,38 @@ if [ -z "$state" ]; then
     name=$(basename -- "$root" | LC_ALL=C tr '[:upper:]_ ' '[:lower:]--' | LC_ALL=C sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-//; s/-$//' | cut -c1-64)
     name=${name:-tenuo-claude}
     state="$HOME/.tenuo/projects/$name-$digest"
-    if [ ! -d "$state" ] && [ -f "$root/.state/state.json" ]; then
-      state="$root/.state"
-    fi
   fi
 fi
 case "$state" in
   '~') state=$HOME ;;
   '~/'*) state="$HOME/${state#'~/'}" ;;
 esac
-if [ -n "$state" ]; then
-  [ -d "$state" ] || exit 0
-  [ -e "$state/disabled" ] && exit 0
-fi
+# Not set up by this user: nothing to enforce, and nothing of the project's to
+# run. A state folder inside the project does not count.
+[ -n "$state" ] || exit 0
+[ -f "$state/state.json" ] || exit 0
+statep=$(physical_dir "$state") || exit 0
+case "$state/" in
+  "$root"/*) exit 0 ;;
+esac
+case "$statep/" in
+  "$root"/*) exit 0 ;;
+esac
+
+# Set up by this user, so an interpreter inside the project is theirs to use.
+old_ifs=$IFS
+IFS=$nl
+set -f
+for py in $inside; do
+  IFS=$old_ifs
+  set +f
+  try "$py" "$@"
+done
+set +f
+IFS=$old_ifs
+
+[ "$mode" = "pre" ] || exit 0
+[ -e "$state/disabled" ] && exit 0
 # Do not guess hook coverage by grepping JSON. Without a parser, a partial
 # matcher or an unrelated string must never suppress this fail-closed guard.
 reason="Tenuo governs $root but python3 was not found, so the Tenuo hook cannot run (fail-closed). Install python3 and tenuo-claude-code, or run tenuo-claude disable."
