@@ -633,6 +633,19 @@ def test_run_is_not_fooled_by_links_or_by_path(tmp_path, env, home):
     assert not ran.exists()
 
 
+def test_run_looks_past_a_project_copy_on_path_to_the_users_own(tmp_path, env):
+    """The project's virtualenv first on PATH must not hide a CLI later on it."""
+    proj = make_project(tmp_path / "cloned", state=False)
+    ran = tmp_path / "ran"
+    local = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", f"echo ran > {ran}")
+    mine = tmp_path / "mine"
+    system = fake_cli(tmp_path / "usr-local-bin" / "tenuo-claude", f"echo mine > {mine}")
+    path = f"{local.parent}:{system.parent}:{env['PATH']}"
+    proc = run_skill_command(["status"], {**env, "PATH": path}, proj)
+    assert f"CLI: {system}" in proc.stdout
+    assert mine.exists() and not ran.exists()
+
+
 def test_inside_judges_by_location_and_by_target(tmp_path):
     root = tmp_path / "proj"
     (root / "sub").mkdir(parents=True)

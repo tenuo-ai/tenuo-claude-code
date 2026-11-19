@@ -50,7 +50,6 @@ import hashlib
 import json
 import re
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -231,10 +230,11 @@ def find_cli(root: Path | None, env: dict, skip=None) -> str | None:
     candidates: list[Path] = []
     if root is not None:
         candidates += [root / ".venv" / "bin" / n for n in CLI_NAMES]
+    # Every PATH entry, not only the first match: when the first match is one
+    # the caller skips, the search has to go on to the next directory.
+    path_dirs = [d for d in (env.get("PATH") or os.defpath).split(os.pathsep) if d]
     for name in CLI_NAMES:
-        found = shutil.which(name, path=env.get("PATH"))
-        if found:
-            candidates.append(Path(found))
+        candidates += [Path(d) / name for d in path_dirs]
     home = Path(env["HOME"]) if env.get("HOME") else None
     bin_dirs = [env.get(k) for k in ("UV_TOOL_BIN_DIR", "PIPX_BIN_DIR", "XDG_BIN_HOME")]
     if home is not None:
