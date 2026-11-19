@@ -451,11 +451,6 @@ def run_skill_command(args: list[str], env: dict, cwd: Path) -> subprocess.Compl
 def test_run_exits_zero_and_reports_the_outcome_in_its_output(tmp_path, env):
     """Claude Code drops a skill whose injected command exits non-zero, so the
     skill runner must exit 0 and say what happened in the text instead."""
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    proc = run_skill_command(["check"], env, empty)
-    assert proc.returncode == 0 and "tenuo-claude not found" in proc.stdout
-
     proj = make_project(tmp_path / "p")
     cli_path = fake_cli(proj / ".venv" / "bin" / "tenuo-claude", "echo checked; exit 3")
     proc = run_skill_command(["check"], env, proj)
@@ -467,17 +462,36 @@ def test_run_exits_zero_and_reports_the_outcome_in_its_output(tmp_path, env):
     proc = run_skill_command(["check"], env, proj)
     assert proc.returncode == 0 and "exited" not in proc.stdout
 
-    bad = run_skill_command(["check"], {**env, "TENUO_PROJECT_DIR": str(empty)}, empty)
-    assert bad.returncode == 0 and "has no tenuo.yaml" in bad.stdout
 
-
-def test_run_without_policy_points_to_setup(tmp_path, env, home):
-    fake_cli(home / ".local" / "bin" / "tenuo-claude", "exit 0")
+def test_run_without_policy_says_tenuo_is_not_set_up(tmp_path, env, home):
     empty = tmp_path / "empty"
     empty.mkdir()
     proc = run_skill_command(["check"], env, empty)
     assert proc.returncode == 0
-    assert "No tenuo.yaml" in proc.stdout and "/tenuo:setup" in proc.stdout
+    assert "Tenuo is not set up here" in proc.stdout and "/tenuo:setup" in proc.stdout
+    assert "CLI: not installed" in proc.stdout
+
+    fake_cli(home / ".local" / "bin" / "tenuo-claude", "exit 0")
+    proc = run_skill_command(["check"], env, empty)
+    assert "Tenuo is not set up here" in proc.stdout and "CLI: found" in proc.stdout
+
+
+def test_run_keeps_inspection_failures_apart_from_no_policy(tmp_path, env):
+    """A missing CLI or a broken TENUO_PROJECT_DIR is not "Tenuo is off": the
+    hooks deny calls in both cases, and earlier receipts may still exist."""
+    proj = make_project(tmp_path / "p")
+    proc = run_skill_command(["audit", "--verify"], env, proj)
+    assert proc.returncode == 0
+    assert "denied until this is fixed" in proc.stdout
+    assert "`tenuo-claude audit --verify` could not run" in proc.stdout
+    assert "not set up here" not in proc.stdout
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    proc = run_skill_command(["check"], {**env, "TENUO_PROJECT_DIR": str(empty)}, empty)
+    assert proc.returncode == 0
+    assert "denied until this is fixed" in proc.stdout and "has no tenuo.yaml" in proc.stdout
+    assert "not set up here" not in proc.stdout
 
 
 SKILL_GRANT = 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run *)'

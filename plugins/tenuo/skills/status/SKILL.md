@@ -12,7 +12,9 @@ Tenuo plugin status and `tenuo-claude check` output, run from the governed proje
 
 Show the user that output verbatim, then add at most three short lines:
 
-- If it says `tenuo-claude not found` or that there is no `tenuo.yaml`, say Tenuo is not active here, so Claude Code's own permissions apply, and that `/tenuo:setup` turns it on (it starts in observe-only mode).
+- If it says there is no `tenuo.yaml` in this directory or any parent, Tenuo is not set up here: say Claude Code's own permissions apply and that `/tenuo:setup` turns it on (it starts in observe-only mode).
+- If it says `tenuo-claude not found`, the check could not run. That does not mean governance is off: report what the `Plugin:` line says (a governed project without the CLI denies tool calls until the CLI is installed) and give the install command.
+- If the `Plugin:` line says tool calls will be denied until something is fixed (for example `TENUO_PROJECT_DIR` pointing at a directory without a policy), say calls are being denied and give the fix it names. Do not describe that as Tenuo being inactive.
 - If the `Plugin:` line says the project is governed via the Tenuo plugin, a `claude hooks: not wired yet` line from `check` is expected: the plugin's hooks are doing the enforcement. Do not call that a problem.
 - If the output ends with `[tenuo-claude exited N]`, a check failed: name the failing line and the fix it suggests.
 

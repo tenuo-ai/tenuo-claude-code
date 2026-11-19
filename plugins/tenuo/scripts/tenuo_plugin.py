@@ -394,23 +394,32 @@ def run_cli(args: list[str], env: dict) -> int:
     """Run ``tenuo-claude <args>`` in the governed project (for plugin skills).
 
     Always returns 0. A skill's injected command that exits non-zero aborts the
-    whole skill, so the outcome is reported in the output instead: one plain
-    line when Tenuo cannot run here, or a final ``[tenuo-claude exited N]`` line
-    when the CLI itself failed.
+    whole skill, so the outcome is reported in the output instead.
+
+    The output keeps three cases apart, because they mean different things for
+    the user: no policy anywhere (Tenuo is not set up here), a project that
+    exists but could not be inspected (the ``Plugin:`` line still says whether
+    calls are governed or denied), and a CLI run that failed (a final
+    ``[tenuo-claude exited N]`` line).
     """
     root, error = find_project({}, env)
     if error:
-        print(f"Tenuo: {error}")
+        # Broken explicit opt-in: the hooks deny every call until it is fixed.
+        print(f"Plugin: {status_line({}, env)}")
         return 0
     cli = find_cli(root, env)
-    if cli is None:
-        print(f"tenuo-claude not found. Install it with: {INSTALL_HINT}, or run {SETUP_HINT}")
-        return 0
     if root is None:
-        print(f"No {POLICY_FILE} in this directory or any parent. "
-              f"To set up Tenuo here: {SETUP_HINT}")
+        cli_note = "found" if cli else f"not installed ({INSTALL_HINT})"
+        print(f"No {POLICY_FILE} in this directory or any parent: Tenuo is not set up here. "
+              f"To set it up: {SETUP_HINT}. tenuo-claude CLI: {cli_note}.")
         return 0
     print(f"Plugin: {status_line({}, env)}")
+    if cli is None:
+        # The project exists; only the inspection is unavailable. Governance
+        # state is whatever the Plugin line above says.
+        print(f"tenuo-claude not found, so `tenuo-claude {' '.join(args)}` could not run. "
+              f"Install it with: {INSTALL_HINT}")
+        return 0
     sys.stdout.flush()
     try:
         proc = subprocess.run([cli, *args], cwd=str(root), env=_child_env(env, root))
