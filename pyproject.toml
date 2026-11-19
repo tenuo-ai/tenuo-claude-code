@@ -1,6 +1,6 @@
 [project]
 name = "tenuo-claude-code"
-version = "0.7.0"
+version = "0.7.1"
 description = "Tenuo governance for Claude Code — warrants, hooks, MCP proxy, and Cloud lifecycle"
 readme = "README.md"
 requires-python = ">=3.10"
