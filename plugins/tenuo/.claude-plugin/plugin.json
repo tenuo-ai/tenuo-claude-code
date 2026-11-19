@@ -15,6 +15,7 @@
   "privacyPolicyUrl": "https://tenuo.ai/privacy",
   "termsOfServiceUrl": "https://tenuo.ai/terms",
   "license": "Apache-2.0",
+  "icon": "./icon.png",
   "keywords": [
     "permissions",
     "guardrails",

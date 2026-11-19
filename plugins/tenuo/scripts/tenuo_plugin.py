@@ -71,6 +71,8 @@ SKILL_COMMANDS = ("check", "status", "verify", "audit", "state-dir", "--version"
 SKILL_FLAGS = {"audit": ("--verify", "--tail")}
 HINT_MARKER = "setup-hint-shown"
 CLOUD_FILES = ("cloud.env", "cloud_state.json")
+# Policy overlays that only a Cloud setup writes. Local bootstrap moves them aside.
+CLOUD_OVERLAYS = ("tenuo.cloud.yaml", "tenuo.advanced.yaml")
 
 # Claude Code managed settings locations (highest precedence, MDM-pinned).
 MANAGED_SETTINGS_PATHS = (
@@ -455,12 +457,20 @@ def run_cli(args: list[str], env: dict) -> int:
         print(f"No {POLICY_FILE} in this directory or any parent: Tenuo is not set up here. "
               f"To set it up: {SETUP_HINT}. tenuo-claude CLI: {cli_note}.")
         here = Path(env.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-        if any((d / name).exists() for d in (project_state_dir(here, env), here / STATE_DIR)
-               for name in CLOUD_FILES):
-            print("Cloud credentials exist for this directory but there is no "
-                  f"{POLICY_FILE}: an unfinished Cloud setup. Do not bootstrap it in local mode.")
+        print(f"Project: {here}")
+        credentials = any((d / name).exists()
+                          for d in (project_state_dir(here, env), here / STATE_DIR)
+                          for name in CLOUD_FILES)
+        overlays = [name for name in CLOUD_OVERLAYS if (here / name).exists()]
+        if credentials or overlays:
+            found = " and ".join(part for part in (
+                "Cloud credentials" if credentials else "",
+                ", ".join(overlays) if overlays else "") if part)
+            print(f"Found {found} for this directory but no {POLICY_FILE}: an unfinished "
+                  "Cloud setup. Do not bootstrap it in local mode.")
         return 0
     print(f"Plugin: {status_line({}, env)}")
+    print(f"Project: {root}")
     if cli is None:
         # The project exists; only the inspection is unavailable. Governance
         # state is whatever the Plugin line above says.

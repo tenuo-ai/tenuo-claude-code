@@ -10,7 +10,7 @@ Tenuo plugin status and `tenuo-claude check` output, run from the governed proje
 !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run check`
 ```
 
-Start with one line that answers the question in plain words: **Not set up**, **Observing** (calls are logged, nothing is blocked), **Enforcing** (out-of-policy calls are blocked), or **Denying every call until fixed**. Then show the user that output verbatim, then add at most three short lines:
+Start with one line that answers the question in plain words: **Not set up**, **Disabled**, **Observing** (calls are logged, nothing is blocked), **Enforcing** (out-of-policy calls are blocked), or **Denying every call until fixed**. Take it from the `Plugin:` line first: when that line says governance is disabled for the project, the answer is **Disabled** (nothing is logged or blocked here, whatever mode the policy file names; `tenuo-claude up` turns it back on). If the output shows enforcement pinned by an organization, say that separately. Then show the user that output verbatim, then add at most three short lines:
 
 - If it says there is no `tenuo.yaml` in this directory or any parent, Tenuo is not set up here: say Claude Code's own permissions apply and that `/tenuo:setup` turns it on (it starts in observe-only mode).
 - If it says `tenuo-claude not found`, the check could not run. That does not mean governance is off: report what the `Plugin:` line says (a governed project without the CLI denies tool calls until the CLI is installed) and give the install command.

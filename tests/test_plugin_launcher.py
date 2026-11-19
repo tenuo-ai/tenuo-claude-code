@@ -491,7 +491,8 @@ def test_run_without_policy_says_tenuo_is_not_set_up(tmp_path, env, home):
     assert proc.returncode == 0
     assert "Tenuo is not set up here" in proc.stdout and "/tenuo:setup" in proc.stdout
     assert "CLI: not installed" in proc.stdout
-    assert "Cloud credentials" not in proc.stdout
+    assert f"Project: {empty.resolve()}" in proc.stdout or f"Project: {empty}" in proc.stdout
+    assert "unfinished" not in proc.stdout
 
     cli_path = fake_cli(home / ".local" / "bin" / "tenuo-claude", "exit 0")
     proc = run_skill_command(["--version"], env, empty)
@@ -502,7 +503,19 @@ def test_run_without_policy_says_tenuo_is_not_set_up(tmp_path, env, home):
     (empty / ".state").mkdir()
     (empty / ".state" / "cloud.env").write_text("x\n")
     proc = run_skill_command(["status"], env, empty)
-    assert "unfinished Cloud setup" in proc.stdout
+    assert "Found Cloud credentials" in proc.stdout and "unfinished Cloud setup" in proc.stdout
+
+
+@pytest.mark.parametrize("overlay", ["tenuo.cloud.yaml", "tenuo.advanced.yaml"])
+def test_run_flags_a_cloud_overlay_without_a_policy(tmp_path, env, overlay):
+    """Local bootstrap moves Cloud overlays aside, so setup must not treat a
+    directory that has one as a blank slate."""
+    proj = tmp_path / "half"
+    proj.mkdir()
+    (proj / overlay).write_text("cloud: {}\n")
+    proc = run_skill_command(["status"], env, proj)
+    assert proc.returncode == 0
+    assert f"Found {overlay}" in proc.stdout and "unfinished Cloud setup" in proc.stdout
 
 
 @pytest.mark.parametrize("args", [
@@ -532,6 +545,7 @@ def test_run_passes_read_only_commands_through(tmp_path, env, args):
     proc = run_skill_command(args, env, proj)
     assert proc.returncode == 0
     assert f"CLI: {cli_path}" in proc.stdout
+    assert f"Project: {proj.resolve()}" in proc.stdout
     assert seen.read_text().split() == args
 
 

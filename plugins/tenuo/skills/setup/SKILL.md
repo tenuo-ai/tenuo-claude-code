@@ -42,15 +42,25 @@ A fresh setup should cost the user two approvals: the install and the bootstrap.
   credentials exist. Never display private keys or credential files.
 - Commands that change something (`uv tool install`, `bootstrap`, `init`,
   `refresh`, `up`) run as ordinary commands with the CLI path the launcher
-  printed, so the user sees and approves each one.
+  printed, so the user sees and approves each one. Tie every `tenuo-claude`
+  command that changes something to the project on the launcher's `Project:`
+  line, so it cannot act on whatever directory the shell happens to be in:
+
+  ```sh
+  TENUO_PROJECT_DIR='<Project path>' <cli-path> refresh
+  ```
+
+  That sets the variable for the one command only. Do not export it into the
+  session.
 
 ## Steps
 
 1. Read the launcher output above and pick the case.
    - **`No tenuo.yaml … Tenuo is not set up here`**: a fresh project. Go to
-     step 2. If it also says Cloud credentials exist, stop: report the
-     unfinished Cloud setup and ask for the intended policy instead of
-     bootstrapping in local mode.
+     step 2. If it also says it found Cloud credentials or a Cloud overlay
+     (`tenuo.cloud.yaml`, `tenuo.advanced.yaml`), stop: report the unfinished
+     Cloud setup and ask for the intended policy. A local bootstrap would move
+     those files aside.
    - **A `Plugin:` line that names a project root**: an existing setup. Go to
      step 4. If that root is not the directory the user means, ask before
      changing anything.
@@ -68,17 +78,16 @@ A fresh setup should cost the user two approvals: the install and the bootstrap.
 3. Bootstrap a fresh local project. Say first that this installs a native
    authorizer, creates `tenuo.yaml`, keeps private state outside the project
    under `~/.tenuo`, and merges hook and MCP settings into the project. Then
-   run, with the CLI path from step 2:
+   run, with the CLI path from step 2 and the path on the `Project:` line:
 
    ```sh
-   <cli-path> bootstrap --native --pack filesystem-dev
+   TENUO_PROJECT_DIR='<Project path>' <cli-path> bootstrap --native --pack filesystem-dev
    ```
 
    The filesystem-dev pack limits file access to the project directory,
    WebFetch to api.github.com, and the shell to `ls` and `pwd`. Describe the
    rendered policy as it is; do not promise broad shell access. Other packs
-   need their parameters reviewed first. Leave `TENUO_PROJECT_DIR` unset until
-   the policy exists. Continue at step 5.
+   need their parameters reviewed first. Continue at step 5.
 4. Existing setup: preserve the policy and its mode. Run the launcher with
    `check`, then repair only the reported problem:
    - no state directory yet (a policy that was never initialized on this
