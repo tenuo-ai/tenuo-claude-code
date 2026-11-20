@@ -1,0 +1,35 @@
+{
+  "name": "tenuo",
+  "displayName": "Tenuo",
+  "version": "0.3.3",
+  "description": "Give Claude Code real access and keep it in bounds: limit each tool and MCP server to the repos, folders, shell commands and web domains you name, and get a signed record of every allowed and denied call. Skills that set Tenuo up, show its status and read its record. Starts in observe-only mode.",
+  "author": {
+    "name": "Tenuo",
+    "email": "daniel@tenuo.ai",
+    "url": "https://tenuo.ai"
+  },
+  "homepage": "https://tenuo.ai",
+  "repository": "https://github.com/tenuo-ai/tenuo-claude-code",
+  "license": "Apache-2.0",
+  "icon": "./icon.png",
+  "documentationUrl": "https://github.com/tenuo-ai/tenuo-claude-code/blob/main/directory/tenuo/README.md",
+  "supportUrl": "https://github.com/tenuo-ai/tenuo-claude-code/issues",
+  "privacyPolicyUrl": "https://tenuo.ai/privacy",
+  "termsOfServiceUrl": "https://tenuo.ai/terms",
+  "keywords": [
+    "permissions",
+    "guardrails",
+    "mcp",
+    "mcp-security",
+    "allowlist",
+    "audit-log",
+    "policy",
+    "prompt-injection",
+    "authorization",
+    "governance",
+    "security",
+    "hooks",
+    "agents",
+    "warrants"
+  ]
+}

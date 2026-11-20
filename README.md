@@ -118,6 +118,15 @@ Then follow the Cloud setup prompts. [Details: Cloud mode](#cloud-mode).
 
 ## Install as a Claude Code plugin
 
+There are two editions of the plugin. Use one.
+
+| Edition | Where it comes from | What it has |
+|---|---|---|
+| Directory edition | The Claude plugin directory (the folder [`directory/tenuo`](directory/tenuo)) | The three skills, as plain instructions. Every command is one you approve. |
+| Full edition | This repository's own marketplace (the folder [`plugins/tenuo`](plugins/tenuo)) | The same skills with fewer approvals, plus hooks: a session-start status line, and a safety net that keeps a set-up project governed when its settings file is missing. |
+
+In both, enforcement comes from the hooks that `tenuo-claude` writes into your project during setup. The rest of this section describes the full edition.
+
 The repo is also a Claude Code plugin marketplace. From your shell:
 
 ```bash

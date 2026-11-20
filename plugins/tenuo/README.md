@@ -57,4 +57,6 @@ Ask in your own words; Claude starts the matching skill and asks before it insta
 - `tenuo-claude disable` turns governance off for a project; `tenuo-claude uninstall` also deletes its keys and receipts. Removing the plugin alone does not remove hook entries the CLI wrote.
 - Questions and bugs: [GitHub issues](https://github.com/tenuo-ai/tenuo-claude-code/issues). Security reports: [SECURITY.md](https://github.com/tenuo-ai/tenuo-claude-code/blob/main/SECURITY.md).
 
+This is the full edition, installed from this repository. The Claude plugin directory lists a skills-only edition from [`directory/tenuo`](https://github.com/tenuo-ai/tenuo-claude-code/tree/main/directory/tenuo); use one or the other.
+
 Full documentation: [tenuo-ai/tenuo-claude-code](https://github.com/tenuo-ai/tenuo-claude-code#readme). License: Apache-2.0.
