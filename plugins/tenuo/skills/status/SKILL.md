@@ -1,13 +1,13 @@
 ---
 name: status
 description: Show whether Tenuo is governing this project and what it is doing (observing or enforcing, policy, warrant, authorizer, hook wiring). Use when the user asks if Tenuo is on, whether Claude's tool calls are being limited or logged here, or why Tenuo looks broken. Read-only.
-allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run *)
+allowed-tools: Bash("${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook" run *)
 ---
 
 Tenuo plugin status and `tenuo-claude status` output, run from the governed project (the directory holding `tenuo.yaml`):
 
 ```
-!`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run status`
+!`"${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook" run status`
 ```
 
 Start with one line that answers the question in plain words: **Not set up**, **Disabled**, **Observing** (calls are logged, nothing is blocked), **Enforcing** (out-of-policy calls are blocked), or **Denying every call until fixed**. Take it from the `Plugin:` line first: when that line says governance is disabled for the project, the answer is **Disabled** (nothing is logged or blocked here, whatever mode the policy file names; `tenuo-claude up` turns it back on). If the output shows enforcement pinned by an organization, say that separately. Then show the user that output verbatim, then add at most three short lines:

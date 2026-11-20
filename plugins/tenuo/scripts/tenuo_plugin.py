@@ -44,7 +44,8 @@ JSON parsing).
 ``session-start`` prints one status line and never blocks. In a project with
 no Tenuo policy it prints the setup hint once per machine, then stays silent.
 ``run <command>`` runs a read-only ``tenuo-claude`` command for the plugin
-skills (see ``SKILL_COMMANDS``); anything that changes state is refused, because
+skills (see ``SKILL_COMMANDS``). The skills start it through ``tenuo-hook``, as
+the hooks do, so the same choice of interpreter applies; anything that changes state is refused, because
 the skills pre-approve this script and a pre-approved command must not be able
 to install, rewire or switch governance off. It always exits 0 and reports a
 failure in its output: Claude Code drops a skill whose injected command exits
@@ -99,6 +100,7 @@ POST_TIMEOUT_DEFAULT = 20.0
 NOOP_NO_PROJECT = "noop:no-project"
 NOOP_NOT_INITIALIZED = "noop:not-initialized"
 NOOP_STATE_IN_PROJECT = "noop:state-in-project"
+NOOP_RELATIVE_STATE_DIR = "noop:relative-state-dir"
 NOOP_DISABLED = "noop:disabled"
 NOOP_ALREADY_WIRED = "noop:already-wired"
 DELEGATE = "delegate"
@@ -313,16 +315,30 @@ def _inside(path: Path, root: Path) -> bool:
     return False
 
 
+def _state_override(env: dict) -> str:
+    """``TENUO_STATE_DIR`` with ``~`` expanded, or an empty string."""
+    return os.path.expanduser((env.get("TENUO_STATE_DIR") or "").strip())
+
+
+def _relative_state_override(env: dict) -> bool:
+    override = _state_override(env)
+    return bool(override) and not os.path.isabs(override)
+
+
 def user_state_dir(root: Path, env: dict) -> Path | None:
     """The project's state directory, when this user set the project up here.
 
     The evidence is ``state.json`` in a state directory outside the project,
     which ``tenuo-claude init`` writes and a repository cannot ship. An
     in-project ``.state``, or a link from the project to somewhere else, does
-    not count. Returns None otherwise.
+    not count. Neither does a relative ``TENUO_STATE_DIR``: it names a different
+    place for each program that reads it, depending on where that program was
+    started. Returns None otherwise.
     """
-    override = (env.get("TENUO_STATE_DIR") or "").strip()
-    state = Path(os.path.expanduser(override)) if override else project_state_dir(root, env)
+    if _relative_state_override(env):
+        return None
+    override = _state_override(env)
+    state = Path(override) if override else project_state_dir(root, env)
     if (state / "state.json").is_file() and not _inside(state, root):
         return state
     return None
@@ -335,9 +351,9 @@ def _set_up_by_this_user(root: Path, env: dict) -> bool:
 def _project_carries_state(root: Path, env: dict) -> bool:
     """True when the project has a state folder of its own (older layout, a
     ``TENUO_STATE_DIR`` pointing into it, or files a repository shipped)."""
-    override = (env.get("TENUO_STATE_DIR") or "").strip()
-    if override and _inside(Path(os.path.expanduser(override)), root):
-        return os.path.isdir(os.path.expanduser(override))
+    override = _state_override(env)
+    if override and _inside(Path(override), root):
+        return os.path.isdir(override)
     return (root / STATE_DIR).exists() or (root / STATE_DIR).is_symlink()
 
 
@@ -375,6 +391,10 @@ def decide(event: dict, env: dict) -> tuple[str, Path | None, str | None, str | 
         # Claude Code's to run, and still do the enforcing where they exist.
         if already_wired(root, env):
             return NOOP_ALREADY_WIRED, root, None, None
+        if _relative_state_override(env):
+            # A configuration problem of its own, with its own fix: neither
+            # "set it up" nor "refresh" would help.
+            return NOOP_RELATIVE_STATE_DIR, root, None, None
         if _project_carries_state(root, env):
             return NOOP_STATE_IN_PROJECT, root, None, None
         return NOOP_NOT_INITIALIZED, root, None, None
@@ -480,6 +500,11 @@ def status_line(event: dict, env: dict) -> str:
     if decision == NOOP_NOT_INITIALIZED:
         return (f"Tenuo: {root / POLICY_FILE} found but not initialized, so tool calls are "
                 f"NOT governed yet. Run: tenuo-claude bootstrap{install}")
+    if decision == NOOP_RELATIVE_STATE_DIR:
+        return (f"Tenuo: TENUO_STATE_DIR is a relative path ({_state_override(env)}), which the "
+                "plugin does not use because it names a different place depending on where a "
+                f"program starts. Tool calls in {root} are NOT governed by the plugin. Set "
+                "TENUO_STATE_DIR to an absolute path, or unset it.")
     if decision == NOOP_STATE_IN_PROJECT:
         return (f"Tenuo: {root} keeps a Tenuo state folder inside the project, which the plugin "
                 "does not act on, so tool calls are NOT governed by the plugin here. If you set "

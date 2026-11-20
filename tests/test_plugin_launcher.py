@@ -554,6 +554,68 @@ def test_hook_wrapper_finds_the_policy_through_a_linked_session_directory(tmp_pa
     assert not ran.exists()
 
 
+def test_skills_reach_the_launcher_through_the_wrapper(tmp_path, env, home):
+    """The skills start `tenuo-hook run …`, so the wrapper's choice of
+    interpreter applies to them as it does to the hooks."""
+    ran = tmp_path / "ran"
+    own_python = fake_cli(tmp_path / "pybin" / "python3", f'exec "{sys.executable}" "$@"')
+    proj = make_project(tmp_path / "cloned", state=False)
+    fake_cli(proj / "bin" / "python3", f"echo ran > {ran}")
+    cli_path = fake_cli(home / ".local" / "bin" / "tenuo-claude", "echo status-output")
+    path = f"{proj / 'bin'}:{own_python.parent}:{env['PATH']}"
+
+    def run(*args, **extra):
+        return subprocess.run([str(HOOK_SH), "run", *args], capture_output=True, text=True,
+                              cwd=str(proj), timeout=60,
+                              env={**env, "PATH": path, "CLAUDE_PROJECT_DIR": str(proj), **extra})
+
+    proc = run("status")
+    assert proc.returncode == 0
+    assert f"CLI: {cli_path}" in proc.stdout and "status-output" in proc.stdout
+    assert not ran.exists()
+    # The read-only rule still holds on this route.
+    assert "read-only commands only" in run("uninstall", "--yes").stdout
+    # With no interpreter at all, a skill gets a sentence, not silence or an error.
+    proc = run("status", TENUO_PLUGIN_PYTHON="/missing")
+    assert proc.returncode == 0 and "no python3 of your own" in proc.stdout
+    assert not ran.exists()
+
+
+def test_a_relative_state_directory_is_not_setup(tmp_path, env):
+    """`TENUO_STATE_DIR=some/dir` means a different place to each program that
+    reads it, so it is never proof that the user set the project up."""
+    proj = make_project(tmp_path / "p", state=False)
+    planted = proj / "st"
+    planted.mkdir()
+    (planted / "state.json").write_text("{}")
+    relative = {**env, "TENUO_STATE_DIR": "st", "CLAUDE_PROJECT_DIR": str(proj)}
+    assert tp.user_state_dir(proj, relative) is None
+    assert tp.decide({"cwd": str(proj)}, relative)[0] == tp.NOOP_RELATIVE_STATE_DIR
+    # It is its own problem with its own fix, wherever the path happens to lead:
+    # a sibling directory outside the project gets the same answer.
+    sibling = tmp_path / "external-state"
+    sibling.mkdir()
+    (sibling / "state.json").write_text("{}")
+    outward = {**relative, "TENUO_STATE_DIR": "../external-state"}
+    assert tp.decide({"cwd": str(proj)}, outward)[0] == tp.NOOP_RELATIVE_STATE_DIR
+    line = tp.status_line({"cwd": str(proj)}, outward)
+    assert "relative path (../external-state)" in line and "absolute path" in line
+    assert "refresh" not in line and "/tenuo:setup" not in line
+    for mode in ("pre", "post"):
+        proc = run_hook(mode, {**PRE_EVENT, "cwd": str(proj)}, outward, proj)
+        assert proc.returncode == 0 and proc.stdout == b""
+    # The same directory named from somewhere else, where the relative path
+    # happens to exist outside the project.
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "st").mkdir(parents=True)
+    (elsewhere / "st" / "state.json").write_text("{}")
+    proc = subprocess.run([str(HOOK_SH), "pre"], input=json.dumps(PRE_EVENT).encode(),
+                          capture_output=True, cwd=str(elsewhere), timeout=60,
+                          env={**relative, "TENUO_PROJECT_DIR": str(proj),
+                               "TENUO_PLUGIN_PYTHON": "/missing"})
+    assert proc.returncode == 0 and proc.stdout == b""
+
+
 def test_hook_wrapper_follows_a_linked_interpreter_into_the_project(tmp_path, env):
     """A `python3` outside the project that is a link to a file inside it."""
     ran = tmp_path / "ran"
@@ -823,8 +885,8 @@ def test_run_keeps_inspection_failures_apart_from_no_policy(tmp_path, env):
     assert "not set up here" not in proc.stdout
 
 
-SKILL_GRANT = 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run *)'
-SKILL_COMMAND_PREFIX = 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tenuo_plugin.py" run '
+SKILL_GRANT = 'Bash("${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook" run *)'
+SKILL_COMMAND_PREFIX = '"${CLAUDE_PLUGIN_ROOT}/scripts/tenuo-hook" run '
 
 
 @pytest.mark.parametrize("name", ["setup", "status", "audit"])

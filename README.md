@@ -157,6 +157,7 @@ How the plugin decides, per tool call:
 | No `tenuo.yaml` in the session directory or any parent | Nothing (Claude Code permissions apply) |
 | `tenuo.yaml` but not set up by you on this machine (no state under `~/.tenuo`) | Nothing; session start says to run `bootstrap` |
 | `tenuo.yaml` and a `.state` folder inside the project | Nothing: the plugin does not act on state a project carries. Session start says so; `tenuo-claude refresh` moves an older setup to `~/.tenuo` |
+| `TENUO_STATE_DIR` set to a relative path | Nothing; session start says to make it absolute or unset it |
 | `<state>/disabled` present (`tenuo-claude disable`) | Nothing; `tenuo-claude up` or `init` re-arms it |
 | Tenuo hooks already wired by `init`/`bootstrap` (project, user, or managed settings) | Nothing; the wired hook enforces, so no double receipts |
 | Initialized, not wired, `tenuo-claude` found | Delegates to `tenuo-claude _hook` |

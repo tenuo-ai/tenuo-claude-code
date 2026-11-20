@@ -17,6 +17,7 @@
 # being screened, and may lead into the project. The caller's PATH is kept
 # aside for finding the interpreter, and handed back to the launcher.
 # Usage: tenuo-hook pre|post|session-start
+#        tenuo-hook run <read-only command>     (the plugin's skills)
 user_path=${PATH:-}
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:/run/current-system/sw/bin
 export PATH
@@ -163,10 +164,18 @@ else
   done
 fi
 
+# A skill gets one line of text instead of silence when nothing could run it.
+finish() {
+  if [ "$mode" = run ]; then
+    printf '%s\n' "Tenuo: no python3 of your own was found to run this with. Install python3, or run tenuo-claude from a terminal."
+  fi
+  exit 0
+}
+
 # No interpreter of the user's own ran the launcher. Work out, without Python,
 # whether this user has set the project up: state.json in a state directory
 # outside the project, at the same project-path hash the CLI uses.
-[ -n "$root" ] || exit 0
+[ -n "$root" ] || finish
 root=$rootp
 [ -n "$root" ] || {
   [ "$mode" = "pre" ] && exit 2
@@ -192,15 +201,21 @@ case "$state" in
   '~/'*) state="$HOME/${state#'~/'}" ;;
 esac
 # Not set up by this user: nothing to enforce, and nothing of the project's to
-# run. A state folder inside the project does not count.
-[ -n "$state" ] || exit 0
-[ -f "$state/state.json" ] || exit 0
-statep=$(physical_dir "$state") || exit 0
+# run. A state folder inside the project does not count, and neither does a
+# relative TENUO_STATE_DIR, which would mean a different place to each program
+# that reads it.
+[ -n "$state" ] || finish
+case "$state" in
+  /*) ;;
+  *) finish ;;
+esac
+[ -f "$state/state.json" ] || finish
+statep=$(physical_dir "$state") || finish
 case "$state/" in
-  "$root"/*) exit 0 ;;
+  "$root"/*) finish ;;
 esac
 case "$statep/" in
-  "$root"/*) exit 0 ;;
+  "$root"/*) finish ;;
 esac
 
 # Set up by this user, so an interpreter inside the project is theirs to use.
@@ -215,7 +230,7 @@ done
 set +f
 IFS=$old_ifs
 
-[ "$mode" = "pre" ] || exit 0
+[ "$mode" = "pre" ] || finish
 [ -e "$state/disabled" ] && exit 0
 # Do not guess hook coverage by grepping JSON. Without a parser, a partial
 # matcher or an unrelated string must never suppress this fail-closed guard.
