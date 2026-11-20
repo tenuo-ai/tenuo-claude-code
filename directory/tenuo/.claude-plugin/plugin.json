@@ -1,7 +1,7 @@
 {
   "name": "tenuo",
   "displayName": "Tenuo",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Give Claude Code real access and keep it in bounds: limit each tool and MCP server to the repos, folders, shell commands and web domains you name, and get a signed record of every allowed and denied call. Skills that set Tenuo up, show its status and read its record. Starts in observe-only mode.",
   "author": {
     "name": "Tenuo",
