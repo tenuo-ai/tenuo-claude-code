@@ -5614,6 +5614,9 @@ COMMANDS = {
     "_managed-mcp-proxy": cmd_managed_mcp_proxy,
 }
 
+# Using a server someone shared with you needs no project, policy or hooks.
+SHARED_COMMANDS = ("accept", "shared")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog=CLI_COMMAND, description=__doc__,
@@ -5626,6 +5629,8 @@ def main() -> None:
         sub.add_parser(name)
     sub.add_parser("mcp-proxy",
                    help="serve mcp.downstream over stdio, checking each call (for any MCP client)")
+    from . import shared as _shared
+    _shared.add_parsers(sub)
     sub.add_parser("disable",
                    help="turn governance off (unwire hooks + stop authorizer; keeps policy/state)")
     pun = sub.add_parser("uninstall",
@@ -5750,6 +5755,10 @@ def main() -> None:
     if not args.cmd:
         parser.print_help()
         return
+    if args.cmd in SHARED_COMMANDS:
+        from . import shared as _shared
+        handler = _shared.cmd_accept if args.cmd == "accept" else _shared.cmd_shared
+        raise SystemExit(handler(args))
     # Global install — no governed project directory required.
     if args.cmd != "install-authorizer":
         bind_project_paths(
