@@ -116,6 +116,46 @@ tenuo-claude bootstrap --native --pack filesystem-dev --cloud
 
 Then follow the Cloud setup prompts. [Details: Cloud mode](#cloud-mode).
 
+## Use an MCP server someone shared with you
+
+Someone sent you an invitation link to their MCP server. Two commands, and Claude Code can use it:
+
+```bash
+uv tool install tenuo-claude-code
+tenuo-claude accept 'http://their-server:8765/#HG-XXXX-XXXX'
+```
+
+```
+✓ Created a key for this computer (fingerprint 7980-9ea8)
+✓ Sent it to their-server:8765
+… Waiting for the owner to approve. Tell them your key is 7980-9ea8.
+✓ Approved: list_events until Thu 22:43 EST
+
+Add 'calendar' to Claude Code for all your projects? Nothing else in Claude changes. [Y/n]
+✓ Added 'calendar' to Claude Code. Start a new Claude Code session and ask it to use calendar.
+```
+
+What happens:
+
+- A key is created for this computer and never leaves it. The owner approves it on their side.
+- The owner's public key is pinned when they approve, so there's nothing to configure or trust by hand.
+- One MCP server is added to Claude Code. Each call is signed with your key and the owner's latest
+  grant, and the owner's server checks it before the tool runs. Claude sees only the tools you were given.
+- When the owner extends, narrows or ends your access, it applies on your next call. Tools they add
+  appear in your next Claude Code session.
+
+**Nothing else changes.** `accept` adds no hooks, policy or authorizer, and doesn't touch your projects.
+Claude Code's other tools and permissions work exactly as before. Keys live in `~/.tenuo/shared/`,
+readable only by you.
+
+```bash
+tenuo-claude shared list              # what's been shared with you, and until when
+tenuo-claude shared remove calendar   # remove it from Claude Code and delete this machine's key
+```
+
+Options: `--scope project` adds the server to the current project only; `--no-claude` prints the
+`claude mcp add` command instead of running it.
+
 ## Install as a Claude Code plugin
 
 There are two editions of the plugin. Use one.
